@@ -7,6 +7,8 @@ type Result = {
   input: string;
   normalizedName?: string;
   node?: string;
+  network?: "sepolia" | "mainnet";
+  mode?: "ensv2" | "legacy-fallback" | "reverse";
   registry?: { address?: string; found: boolean };
   resolver?: { address?: string; found: boolean };
   address?: string;
@@ -21,13 +23,10 @@ const CANONICAL = "0xeEeEEEeE14D718C2B47D9923Deab1335E144EeEe";
 
 function short(value?: string, left = 12, right = 8) {
   if (!value) return "—";
-  if (value.length <= left + right + 1) return value;
-  return `${value.slice(0, left)}…${value.slice(-right)}`;
+  return value.length <= left + right + 1 ? value : `${value.slice(0, left)}…${value.slice(-right)}`;
 }
 
-function isZeroAddress(value?: string) {
-  return value?.toLowerCase() === ZERO;
-}
+function isZeroAddress(value?: string) { return value?.toLowerCase() === ZERO; }
 
 function statusMeta(status: string) {
   switch (status) {
@@ -39,50 +38,24 @@ function statusMeta(status: string) {
   }
 }
 
-function Section({ eyebrow, title, count, children }: { eyebrow?: string; title: string; count?: number; children: React.ReactNode }) {
-  return (
-    <section className="section">
-      <div className="section-heading">
-        <div>
-          {eyebrow && <div className="section-eyebrow">{eyebrow}</div>}
-          <h2>{title}</h2>
-        </div>
-        {typeof count === "number" && <span className="count">{count}</span>}
-      </div>
-      {children}
-    </section>
-  );
+function Section({ eyebrow, title, count, children }: { eyebrow: string; title: string; count?: number; children: React.ReactNode }) {
+  return <section className="section"><div className="section-heading"><div><div className="eyebrow">{eyebrow}</div><h2>{title}</h2></div>{typeof count === "number" && <span className="count">{count}</span>}</div>{children}</section>;
 }
 
-function TraceRow({ step, index, compact = false }: { step: TraceStep; index: number; compact?: boolean }) {
+function TraceRow({ step, index }: { step: TraceStep; index: number }) {
   const [open, setOpen] = useState(false);
   const meta = statusMeta(step.status);
   const hasDetails = Boolean(step.value || step.error);
   const isCall = /getResolver|getSubregistry|findResolver|findRegistries|resolve\(/.test(step.label);
-
-  return (
-    <div className={`trace-row ${meta.className} ${open ? "open" : ""}`}>
-      <button className="trace-summary" onClick={() => hasDetails && setOpen(!open)} disabled={!hasDetails} aria-expanded={open}>
-        <span className="trace-index">{String(index + 1).padStart(2, "0")}</span>
-        <span className="status-icon">{meta.icon}</span>
-        <span className="trace-label">{step.label}</span>
-        <span className="trace-status">{meta.label}</span>
-        {hasDetails && <span className="chevron">{open ? "⌃" : "⌄"}</span>}
-      </button>
-      {open && (
-        <div className="trace-details">
-          {step.value && (
-            <div className="detail-block">
-              <div className="detail-label">{isCall || compact ? "CALL DATA" : "VALUE"}</div>
-              <div className="detail-value"><code>{step.value}</code></div>
-              <button className="copy" onClick={() => navigator.clipboard?.writeText(step.value ?? "")}>COPY</button>
-            </div>
-          )}
-          {step.error && <div className="detail-note">{step.error}</div>}
-        </div>
-      )}
-    </div>
-  );
+  return <div className={`trace-row ${meta.className} ${open ? "open" : ""}`}>
+    <button className="trace-summary" onClick={() => hasDetails && setOpen(!open)} disabled={!hasDetails} aria-expanded={open}>
+      <span className="index">{String(index + 1).padStart(2, "0")}</span><span className="status">{meta.icon}</span><span className="label">{step.label}</span><span className="state">{meta.label}</span>{hasDetails && <span>{open ? "⌃" : "⌄"}</span>}
+    </button>
+    {open && <div className="details">
+      {step.value && <div className="detail-value"><span>{isCall ? "CALL DATA" : "VALUE"}</span><code>{step.value}</code><button onClick={() => navigator.clipboard?.writeText(step.value ?? "")}>COPY</button></div>}
+      {step.error && <p>{step.error}</p>}
+    </div>}
+  </div>;
 }
 
 export default function Home() {
@@ -96,298 +69,48 @@ export default function Home() {
     try {
       const response = await fetch(`/api/inspect?name=${encodeURIComponent(name.trim())}`);
       setResult(await response.json());
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   }
 
   const trace = result?.trace ?? [];
-  const registrySteps = trace.filter((step) => /ROOT REGISTRY|getResolver\(|getSubregistry\(/.test(step.label));
-  const resolverSteps = trace.filter((step) => /Resolver for |Longest-suffix resolver|Resolver matched/.test(step.label));
-  const resolutionSteps = trace.filter((step) => /Universal Resolver|resolution result|resolution envelope|address record/.test(step.label));
-  const diagnosticSteps = trace.filter((step) => ["error", "warning"].includes(step.status));
+  const registrySteps = trace.filter(s => /ROOT REGISTRY|getResolver\(|getSubregistry\(/.test(s.label));
+  const resolverSteps = trace.filter(s => /Resolver for |Longest-suffix resolver|Resolver matched/.test(s.label));
+  const resolutionSteps = trace.filter(s => /Universal Resolver|resolution result|resolution envelope|address record|Mainnet resolution/.test(s.label));
+  const diagnosticSteps = trace.filter(s => ["error", "warning"].includes(s.status));
   const finalSuccess = Boolean(result?.address && !isZeroAddress(result.address));
-  const infoCount = trace.filter((step) => step.status === "info").length;
+  const isMainnet = result?.network === "mainnet";
+  const isFallback = result?.mode === "legacy-fallback";
+  const targetLabel = isMainnet ? "Ethereum Mainnet" : "Sepolia";
+  const modeLabel = isFallback ? "MAINNET FALLBACK" : result?.mode === "ensv2" ? "ENSv2" : result?.mode === "reverse" ? "REVERSE" : "RAW TRACE";
 
-  return (
-    <main className="shell">
-      <div className="ambient ambient-one" />
-      <div className="ambient ambient-two" />
+  return <main className="shell">
+    <header className="topbar"><div className="brand"><b>◎</b> ENSv2 Inspector <small>DEV TOOL</small></div><div className="network"><i /> {targetLabel.toUpperCase()}</div></header>
 
-      <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark">◎</span>
-          <span>ENSv2 Inspector</span>
-          <span className="version">DEV TOOL</span>
-        </div>
-        <div className="network"><span className="live-dot" /> SEPOLIA</div>
-      </header>
+    <header className="hero"><div><div className="eyebrow">ENSv2 resolution debugger</div><h1>See <span>why</span> ENS resolves.</h1><p>Trace registry hierarchy, resolver selection and raw contract calls — then see exactly where resolution succeeds or breaks.</p></div><div className="hero-meta"><div><span>ENGINE</span><strong>ENSv2</strong></div><div><span>NETWORK</span><strong>{targetLabel}</strong></div><div><span>MODE</span><strong>{modeLabel}</strong></div></div></header>
 
-      <header className="hero">
-        <div className="hero-copy">
-          <div className="eyebrow">ENSv2 resolution debugger</div>
-          <h1>See <span>why</span> ENS resolves.</h1>
-          <p>Trace registry hierarchy, resolver selection and raw contract calls — then see exactly where resolution succeeds or breaks.</p>
-        </div>
-        <div className="hero-side">
-          <div className="side-line"><span>ENGINE</span><strong>ENSv2</strong></div>
-          <div className="side-line"><span>NETWORK</span><strong>Sepolia</strong></div>
-          <div className="side-line"><span>MODE</span><strong>RAW TRACE</strong></div>
-        </div>
-      </header>
+    <div className="search"><span>ENS</span><input value={name} onChange={e => setName(e.target.value)} onKeyDown={e => e.key === "Enter" && inspect()} placeholder="name.eth or 0x…" spellCheck={false}/><button onClick={inspect} disabled={loading}>{loading ? "Running" : "Inspect"}{!loading && " ↗"}</button></div>
+    <div className="hint"><kbd>ENTER</kbd> to inspect · <button onClick={() => setName("ur.integration-tests.eth")}>ur.integration-tests.eth</button> · <button onClick={() => setName("mandragor.eth")}>mandragor.eth</button></div>
 
-      <div className="search-card">
-        <div className="input-prefix">ENS</div>
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") inspect(); }}
-          placeholder="name.eth or 0x…"
-          spellCheck={false}
-          aria-label="ENS name or address"
-        />
-        <button onClick={inspect} disabled={loading}>
-          <span>{loading ? "Running" : "Inspect"}</span>
-          {!loading && <span className="button-arrow">↗</span>}
-        </button>
-      </div>
-      <div className="hint"><kbd>ENTER</kbd> to inspect <span>·</span> Try <button onClick={() => { setName("ur.integration-tests.eth"); }}>ur.integration-tests.eth</button></div>
+    {result && <div className="results">
+      <div className="overview"><div><div className="kicker"><i className={finalSuccess ? "good" : "bad"}/> RESOLUTION TARGET</div><h3>{result.normalizedName ?? result.input}</h3>{result.normalizedName && <div className="path">{result.normalizedName.split(".").reverse().map((x,i,a) => <span key={`${x}-${i}`}>{x}{i < a.length - 1 && <b> › </b>}</span>)}</div>}</div><div className="address"><div className="kicker">RESOLVED ADDRESS</div><code>{result.address ?? "Resolution failed"}</code>{finalSuccess && <strong>● ADDRESS RESOLVED</strong>}</div></div>
 
-      {result && (
-        <div className="results">
-          <div className="result-overview">
-            <div className="overview-main">
-              <div className="result-kicker"><span className={`pulse ${finalSuccess ? "good" : "bad"}`} /> RESOLUTION TARGET</div>
-              <div className="target-name">{result.normalizedName ?? result.input}</div>
-              {result.normalizedName && (
-                <div className="name-path">
-                  {result.normalizedName.split(".").reverse().map((label, index, labels) => (
-                    <span className="path-part" key={`${label}-${index}`}>
-                      <span>{label}</span>{index < labels.length - 1 && <b>›</b>}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="overview-address">
-              <div className="result-kicker">RESOLVED ADDRESS</div>
-              <code>{result.address ?? "Resolution failed"}</code>
-              {finalSuccess && <div className="success-label">● ADDRESS RESOLVED</div>}
-            </div>
-          </div>
+      <div className={`target-banner ${isMainnet ? "mainnet" : "sepolia"}`}><div className="target-icon">⌁</div><div><span>EXECUTION TARGET</span><strong>{isMainnet ? "Universal Resolver · Ethereum Mainnet" : "UniversalResolverV2 · Sepolia"}</strong></div><code>{isMainnet ? short(CANONICAL, 10, 6) : short(V2_TARGET, 10, 6)}</code><em>{isFallback ? "MAINNET FALLBACK" : modeLabel}</em></div>
 
-          <div className="execution-banner">
-            <div className="execution-icon">⌁</div>
-            <div>
-              <span>EXECUTION TARGET</span>
-              <strong>UniversalResolverV2 · Sepolia</strong>
-            </div>
-            <code>{short(V2_TARGET, 10, 6)}</code>
-            <div className="canonical-note"><span>CANONICAL PROXY</span> {short(CANONICAL, 8, 5)}</div>
-          </div>
+      {isFallback && <div className="fallback-note"><b>✓ NAME FOUND ON MAINNET</b><span>Sepolia ENSv2 has no matching resolver for this name. The inspector continued with the canonical ENS entrypoint on Ethereum Mainnet instead of reporting the existing name as missing.</span></div>}
 
-          <div className="stats-row">
-            <div><span>TRACE STEPS</span><strong>{trace.length}</strong></div>
-            <div><span>REGISTRY LEVELS</span><strong>{registrySteps.filter((s) => s.label.includes("getResolver")).length}</strong></div>
-            <div><span>NOTES</span><strong>{infoCount}</strong></div>
-            <div><span>ISSUES</span><strong className={diagnosticSteps.length ? "issue-number" : ""}>{diagnosticSteps.length}</strong></div>
-          </div>
+      <div className="stats"><div><span>TRACE STEPS</span><b>{trace.length}</b></div><div><span>REGISTRY LEVELS</span><b>{registrySteps.filter(s => s.label.includes("getResolver")).length}</b></div><div><span>NETWORK</span><b>{targetLabel}</b></div><div><span>ISSUES</span><b className={diagnosticSteps.length ? "issue" : ""}>{diagnosticSteps.length}</b></div></div>
 
-          <Section eyebrow="01 / hierarchy" title="Registry trace" count={registrySteps.length}>
-            <div className="trace-panel">
-              {registrySteps.map((step, index) => <TraceRow key={step.id} step={step} index={index} compact={step.label.includes("call")} />)}
-            </div>
-          </Section>
+      <Section eyebrow="01 / hierarchy" title="Registry trace" count={registrySteps.length}><div className="trace-panel">{registrySteps.map((s,i) => <TraceRow key={s.id} step={s} index={i}/>)}</div></Section>
+      <Section eyebrow="02 / selection" title="Resolver" count={resolverSteps.length}><div className="trace-panel">{resolverSteps.map((s,i) => <TraceRow key={s.id} step={s} index={i}/>)}</div></Section>
+      <Section eyebrow="03 / execution" title="Resolution" count={resolutionSteps.length}><div className="trace-panel">{resolutionSteps.map((s,i) => <TraceRow key={s.id} step={s} index={i}/>)}</div></Section>
+      <Section eyebrow="04 / analysis" title="Diagnostics"><div className={`diagnostic ${finalSuccess ? "ok" : "problem"}`}><b>{finalSuccess ? "✓" : "!"}</b><div><strong>{finalSuccess ? "Resolution completed" : "Resolution requires attention"}</strong><p>{finalSuccess ? (isFallback ? "The name resolves on Ethereum Mainnet through the canonical ENS entrypoint." : "The inspected name reached a resolver and returned a non-zero address.") : "Use the trace to locate the first actionable failure."}</p></div><span>{finalSuccess ? "PASS" : "CHECK"}</span></div>{diagnosticSteps.map(s => { const m=statusMeta(s.status); return <div className={`diagnostic-detail ${m.className}`} key={s.id}><b>{m.icon}</b><div><strong>{s.label}</strong>{s.error && <p>{s.error}</p>}</div></div>; })}</Section>
+    </div>}
 
-          <Section eyebrow="02 / selection" title="Resolver" count={resolverSteps.length}>
-            <div className="trace-panel">
-              {resolverSteps.map((step, index) => <TraceRow key={step.id} step={step} index={index} />)}
-              {result.resolver?.address && (
-                <div className="selected-resolver">
-                  <div><span>SELECTED RESOLVER</span><strong>{short(result.resolver.address, 14, 8)}</strong></div>
-                  <span className="selected-badge">LONGEST SUFFIX</span>
-                </div>
-              )}
-            </div>
-          </Section>
+    {!result && <div className="empty"><b>⌁</b><strong>READY TO TRACE</strong><p>Enter an ENS name or address to inspect its resolution path.</p></div>}
+    <footer><span>ENSv2 INSPECTOR</span><span>developer debugger · not an explorer</span></footer>
 
-          <Section eyebrow="03 / execution" title="Resolution" count={resolutionSteps.length}>
-            <div className="trace-panel">
-              {resolutionSteps.map((step, index) => <TraceRow key={step.id} step={step} index={index} compact={step.label.includes("raw")} />)}
-            </div>
-          </Section>
-
-          <Section eyebrow="04 / analysis" title="Diagnostics">
-            <div className={`diagnostic ${finalSuccess ? "ok" : "problem"}`}>
-              <div className="diagnostic-symbol">{finalSuccess ? "✓" : "!"}</div>
-              <div className="diagnostic-copy">
-                <strong>{finalSuccess ? "Resolution completed" : "Resolution requires attention"}</strong>
-                <p>{finalSuccess ? "The inspected name reached a resolver and returned a non-zero address." : "Use the trace to locate the first failing stage in the resolution path."}</p>
-              </div>
-              <span className="diagnostic-code">{finalSuccess ? "PASS" : "CHECK"}</span>
-            </div>
-            {diagnosticSteps.map((step) => {
-              const meta = statusMeta(step.status);
-              return (
-                <div className={`diagnostic-detail ${meta.className}`} key={step.id}>
-                  <span className="status-icon">{meta.icon}</span>
-                  <div><strong>{step.label}</strong>{step.error && <p>{step.error}</p>}</div>
-                </div>
-              );
-            })}
-          </Section>
-        </div>
-      )}
-
-      {!result && (
-        <div className="empty-state">
-          <div className="empty-grid" />
-          <div className="empty-symbol">⌁</div>
-          <strong>READY TO TRACE</strong>
-          <p>Enter an ENS name or address to inspect its resolution path.</p>
-        </div>
-      )}
-
-      <footer>
-        <span>ENSv2 INSPECTOR</span>
-        <span>developer debugger · not an explorer</span>
-      </footer>
-
-      <style jsx global>{`
-        :root { color-scheme: dark; }
-        * { box-sizing: border-box; }
-        html { background: #08090b; }
-        body { margin: 0; background: #08090b; color: #e7e7e9; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
-        button, input { font: inherit; }
-        button { -webkit-tap-highlight-color: transparent; }
-        .shell { position: relative; isolation: isolate; max-width: 1160px; margin: 0 auto; padding: 26px 28px 70px; overflow: hidden; }
-        .ambient { position: absolute; pointer-events: none; z-index: -1; border-radius: 50%; filter: blur(90px); opacity: .12; }
-        .ambient-one { width: 420px; height: 420px; top: 60px; right: -230px; background: #5b5bd6; }
-        .ambient-two { width: 300px; height: 300px; top: 560px; left: -220px; background: #3b82f6; opacity: .07; }
-        .topbar { height: 42px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #18191d; }
-        .brand { display: flex; align-items: center; gap: 9px; color: #d4d4d8; font-size: 13px; font-weight: 700; letter-spacing: -.02em; }
-        .brand-mark { font-size: 19px; line-height: 1; color: #a1a1aa; }
-        .version { margin-left: 4px; color: #52525b; font-size: 10px; letter-spacing: .12em; font-weight: 600; }
-        .network { display: flex; align-items: center; gap: 7px; color: #71717a; font-size: 10px; letter-spacing: .13em; }
-        .live-dot { width: 6px; height: 6px; border-radius: 50%; background: #a1a1aa; box-shadow: 0 0 9px rgba(161,161,170,.5); }
-        .hero { display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 70px; padding: 74px 0 42px; }
-        .eyebrow, .section-eyebrow, .result-kicker, .execution-banner span, .stats-row span, .selected-resolver span, .canonical-note span { color: #62636b; font-size: 10px; letter-spacing: .16em; text-transform: uppercase; }
-        h1 { margin: 10px 0 18px; max-width: 760px; font-size: clamp(48px, 8vw, 82px); line-height: .92; letter-spacing: -.075em; font-weight: 750; }
-        h1 span { color: #a1a1aa; }
-        .hero-copy p { max-width: 650px; margin: 0; color: #8b8c93; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 17px; line-height: 1.65; }
-        .hero-side { align-self: end; border-left: 1px solid #222328; padding-left: 18px; }
-        .side-line { display: flex; justify-content: space-between; gap: 20px; padding: 9px 0; border-bottom: 1px solid #18191d; font-size: 10px; }
-        .side-line strong { color: #b8b8bd; font-weight: 500; }
-        .search-card { display: flex; align-items: stretch; min-height: 60px; border: 1px solid #303137; background: rgba(17,18,21,.9); border-radius: 10px; box-shadow: 0 18px 50px rgba(0,0,0,.18); overflow: hidden; }
-        .input-prefix { display: flex; align-items: center; padding: 0 15px; border-right: 1px solid #25262b; color: #52535b; font-size: 10px; letter-spacing: .14em; }
-        .search-card input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: #e4e4e7; padding: 0 16px; font-size: 15px; }
-        .search-card input::placeholder { color: #4f5057; }
-        .search-card button { display: flex; align-items: center; gap: 18px; margin: 5px; padding: 0 20px; border: 0; border-radius: 6px; background: #e4e4e7; color: #101114; font-size: 12px; font-weight: 800; cursor: pointer; }
-        .search-card button:hover { background: #fff; }
-        .search-card button:disabled { opacity: .55; cursor: wait; }
-        .button-arrow { font-size: 16px; }
-        .hint { margin-top: 10px; color: #55565d; font-size: 10px; }
-        .hint kbd { padding: 2px 5px; border: 1px solid #28292e; border-radius: 3px; color: #65666d; font-size: 9px; }
-        .hint span { margin: 0 5px; color: #303137; }
-        .hint button { padding: 0; border: 0; background: transparent; color: #777980; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; font-size: 10px; }
-        .results { margin-top: 55px; }
-        .result-overview { display: grid; grid-template-columns: 1fr minmax(310px, .8fr); gap: 30px; padding: 25px 0 22px; border-top: 1px solid #2a2b30; border-bottom: 1px solid #1c1d21; }
-        .result-kicker { display: flex; align-items: center; gap: 7px; }
-        .pulse { width: 5px; height: 5px; border-radius: 50%; display: inline-block; background: #777980; }
-        .pulse.bad { background: #f87171; }
-        .target-name { margin-top: 10px; font-size: 24px; letter-spacing: -.04em; color: #dedee1; overflow-wrap: anywhere; }
-        .name-path { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 15px; }
-        .path-part { display: inline-flex; align-items: center; gap: 5px; color: #85868d; font-size: 12px; }
-        .path-part span { padding: 5px 8px; border: 1px solid #27282d; background: #111216; border-radius: 4px; }
-        .path-part b { color: #3e3f45; font-weight: 400; }
-        .overview-address { padding-left: 30px; border-left: 1px solid #1c1d21; }
-        .overview-address code { display: block; margin-top: 10px; color: #e4e4e7; font-size: 14px; overflow-wrap: anywhere; }
-        .success-label { margin-top: 9px; color: #777980; font-size: 9px; letter-spacing: .12em; }
-        .execution-banner { display: flex; align-items: center; gap: 13px; margin-top: 10px; padding: 14px 15px; border: 1px solid #24252a; background: #0d0e11; border-radius: 7px; }
-        .execution-icon { width: 25px; height: 25px; display: grid; place-items: center; border: 1px solid #303137; border-radius: 5px; color: #a1a1aa; }
-        .execution-banner div:nth-child(2) { display: flex; flex-direction: column; gap: 3px; flex: 1; }
-        .execution-banner strong { color: #bdbdc2; font-size: 12px; font-weight: 600; }
-        .execution-banner > code { color: #62636b; font-size: 10px; }
-        .canonical-note { display: flex; flex-direction: column; gap: 3px; padding-left: 14px; border-left: 1px solid #23242a; color: #52535b; font-size: 10px; }
-        .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: 10px; border-bottom: 1px solid #1c1d21; }
-        .stats-row > div { padding: 15px; border-right: 1px solid #1c1d21; }
-        .stats-row > div:first-child { padding-left: 0; }
-        .stats-row > div:last-child { border-right: 0; }
-        .stats-row strong { display: block; margin-top: 5px; color: #bcbcc1; font-size: 16px; font-weight: 500; }
-        .stats-row .issue-number { color: #d4d4d8; }
-        .section { margin-top: 47px; }
-        .section-heading { display: flex; align-items: end; justify-content: space-between; margin-bottom: 11px; }
-        h2 { margin: 4px 0 0; color: #c9c9cd; font-size: 16px; font-weight: 600; letter-spacing: -.02em; }
-        .count { min-width: 24px; height: 22px; display: grid; place-items: center; border: 1px solid #28292e; border-radius: 4px; color: #62636b; font-size: 10px; }
-        .trace-panel { border-top: 1px solid #2b2c31; border-bottom: 1px solid #222329; background: rgba(12,13,16,.65); }
-        .trace-row { border-bottom: 1px solid #1c1d21; }
-        .trace-row:last-child { border-bottom: 0; }
-        .trace-summary { width: 100%; min-height: 54px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border: 0; background: transparent; color: inherit; text-align: left; }
-        .trace-row:not(.open) .trace-summary:enabled:hover { background: #111216; cursor: pointer; }
-        .trace-row.open .trace-summary { background: #111216; }
-        .trace-index { width: 22px; color: #37383e; font-size: 9px; }
-        .status-icon { width: 15px; color: #8b8c92; font-size: 13px; text-align: center; font-weight: 700; }
-        .trace-label { flex: 1; min-width: 0; color: #a6a7ac; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .trace-status { color: #4f5057; font-size: 9px; letter-spacing: .08em; }
-        .chevron { width: 15px; color: #4d4e55; font-size: 12px; text-align: center; }
-        .warning .status-icon { color: #eab308; }
-        .error .status-icon { color: #f87171; }
-        .info .status-icon { color: #65666d; }
-        .skipped .status-icon { color: #45464d; }
-        .trace-details { position: relative; margin-left: 47px; margin-right: 10px; margin-bottom: 10px; padding: 13px; border: 1px solid #24252a; background: #090a0d; border-radius: 5px; }
-        .detail-block { padding-right: 44px; }
-        .detail-label { color: #4e4f56; font-size: 9px; letter-spacing: .13em; }
-        .detail-value { margin-top: 7px; }
-        .detail-value code { color: #96979d; font-size: 11px; line-height: 1.7; word-break: break-all; }
-        .copy { position: absolute; top: 10px; right: 10px; padding: 4px 6px; border: 1px solid #25262b; border-radius: 3px; background: transparent; color: #5c5d64; font-size: 8px; cursor: pointer; }
-        .copy:hover { color: #a1a1aa; border-color: #3b3c42; }
-        .detail-note { margin-top: 8px; color: #8a8b91; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 13px; line-height: 1.5; }
-        .selected-resolver { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-top: 0; padding: 14px 15px; background: #101115; border-top: 1px solid #25262b; }
-        .selected-resolver div { display: flex; align-items: center; gap: 15px; }
-        .selected-resolver strong { color: #c8c8cd; font-size: 12px; font-weight: 500; }
-        .selected-badge { color: #6a6b72 !important; padding: 4px 6px; border: 1px solid #292a30; border-radius: 3px; font-size: 8px !important; }
-        .diagnostic { display: flex; align-items: center; gap: 13px; padding: 16px; border: 1px solid #2a2b30; background: #101115; border-radius: 6px; }
-        .diagnostic-symbol { width: 26px; height: 26px; display: grid; place-items: center; border: 1px solid #35363c; border-radius: 5px; color: #b3b3b8; font-weight: 700; }
-        .diagnostic.problem .diagnostic-symbol { color: #f87171; border-color: #4a2929; }
-        .diagnostic-copy { flex: 1; }
-        .diagnostic-copy strong { color: #c4c4c9; font-size: 13px; }
-        .diagnostic-copy p { margin: 5px 0 0; color: #777980; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 13px; line-height: 1.5; }
-        .diagnostic-code { color: #5e5f66; font-size: 9px; letter-spacing: .12em; }
-        .diagnostic-detail { display: flex; gap: 10px; margin-top: 7px; padding: 12px 13px; border: 1px solid #24252a; background: #0d0e11; border-radius: 5px; }
-        .diagnostic-detail strong { color: #97989e; font-size: 11px; }
-        .diagnostic-detail p { margin: 5px 0 0; color: #74757c; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 12px; line-height: 1.5; }
-        .empty-state { position: relative; min-height: 300px; display: flex; flex-direction: column; align-items: center; justify-content: center; margin-top: 55px; overflow: hidden; border: 1px dashed #25262b; border-radius: 8px; text-align: center; color: #53545b; }
-        .empty-grid { position: absolute; inset: 0; opacity: .35; background-image: linear-gradient(#18191d 1px, transparent 1px), linear-gradient(90deg, #18191d 1px, transparent 1px); background-size: 35px 35px; mask-image: linear-gradient(to bottom, transparent, black, transparent); }
-        .empty-symbol { position: relative; margin-bottom: 12px; color: #66676e; font-size: 28px; }
-        .empty-state strong { position: relative; color: #686970; font-size: 10px; letter-spacing: .18em; }
-        .empty-state p { position: relative; margin: 8px 0 0; color: #45464d; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 13px; }
-        footer { display: flex; justify-content: space-between; margin-top: 70px; padding-top: 15px; border-top: 1px solid #18191d; color: #37383e; font-size: 9px; letter-spacing: .1em; }
-        @media (max-width: 760px) {
-          .shell { padding: 20px 16px 50px; }
-          .hero { grid-template-columns: 1fr; gap: 28px; padding-top: 55px; }
-          .hero-side { max-width: 310px; }
-          .result-overview { grid-template-columns: 1fr; gap: 24px; }
-          .overview-address { padding-left: 0; padding-top: 20px; border-left: 0; border-top: 1px solid #1c1d21; }
-          .execution-banner { flex-wrap: wrap; }
-          .canonical-note { width: 100%; padding: 10px 0 0; border-left: 0; border-top: 1px solid #23242a; }
-          .trace-status { display: none; }
-        }
-        @media (max-width: 500px) {
-          h1 { font-size: 48px; }
-          .search-card { min-height: 112px; flex-wrap: wrap; }
-          .input-prefix { height: 50px; }
-          .search-card input { height: 50px; width: calc(100% - 60px); }
-          .search-card button { width: 100%; height: 47px; justify-content: center; margin: 0 5px 5px; }
-          .stats-row > div { padding: 12px 8px; }
-          .stats-row > div:first-child { padding-left: 0; }
-          .trace-index { display: none; }
-          .trace-details { margin-left: 25px; }
-          .selected-resolver, .diagnostic { align-items: flex-start; }
-          .selected-resolver { flex-direction: column; gap: 8px; }
-          .selected-resolver div { flex-direction: column; align-items: flex-start; gap: 6px; }
-          footer { flex-direction: column; gap: 8px; }
-        }
-      `}</style>
-    </main>
-  );
+    <style jsx global>{`
+      :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#08090b;color:#e7e7e9;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}button,input{font:inherit}button{cursor:pointer}.shell{max-width:1160px;margin:auto;padding:26px 28px 70px}.topbar{height:44px;border-bottom:1px solid #1b1c20;display:flex;justify-content:space-between;align-items:center}.brand{font-size:13px;font-weight:700;color:#d4d4d8}.brand b{font-size:18px;margin-right:8px}.brand small{color:#55565e;font-size:9px;letter-spacing:.15em;margin-left:8px}.network{font-size:10px;letter-spacing:.14em;color:#74757d}.network i{display:inline-block;width:6px;height:6px;border-radius:50%;background:#a1a1aa;margin-right:7px}.hero{display:grid;grid-template-columns:1fr 250px;gap:70px;padding:72px 0 42px}.eyebrow,.kicker,.hero-meta span,.target-banner span,.stats span{font-size:10px;letter-spacing:.16em;color:#62636b;text-transform:uppercase}.hero h1{font-size:clamp(48px,8vw,82px);line-height:.92;letter-spacing:-.075em;margin:10px 0 18px}.hero h1 span{color:#a1a1aa}.hero p{max-width:650px;color:#8b8c93;font:17px/1.65 ui-sans-serif,system-ui,sans-serif}.hero-meta{border-left:1px solid #25262b;padding-left:18px;align-self:end}.hero-meta div{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #1b1c20;font-size:10px}.hero-meta strong{font-weight:500;color:#b8b8bd}.search{display:flex;min-height:60px;background:#111215;border:1px solid #303137;border-radius:10px;overflow:hidden}.search>span{padding:20px 16px;color:#55565e;border-right:1px solid #24252a;font-size:11px}.search input{min-width:0;flex:1;background:transparent;border:0;outline:0;color:#eee;padding:0 18px;font-size:15px}.search button{border:0;background:#e7e7e9;color:#0a0a0c;padding:0 23px;font-weight:700;font-size:12px}.hint{color:#5f6068;font-size:11px;padding:10px 2px 50px}.hint kbd{border:1px solid #303137;border-radius:4px;padding:3px 5px;color:#92939a;font-size:9px}.hint button{background:none;border:0;color:#92939a;padding:0}.results{border-top:1px solid #202126}.overview{display:grid;grid-template-columns:1fr 360px;gap:40px;padding:34px 0}.kicker{display:flex;align-items:center;gap:8px}.kicker i{width:7px;height:7px;border-radius:50%;background:#55565e}.kicker i.good{background:#a1a1aa}.kicker i.bad{background:#d4d4d8}.overview h3{font-size:25px;margin:13px 0 10px;letter-spacing:-.04em}.path{color:#777880;font-size:12px}.path b{color:#3f4046}.address{border-left:1px solid #24252a;padding-left:25px}.address code{display:block;color:#d6d6da;font-size:14px;margin-top:14px;word-break:break-all}.address strong{display:block;color:#999aa1;font-size:10px;margin-top:9px;letter-spacing:.08em}.target-banner{display:flex;align-items:center;gap:16px;padding:18px;border:1px solid #25262b;background:#101114;border-radius:9px}.target-banner.mainnet{border-color:#39393e}.target-icon{font-size:24px;color:#8b8c93}.target-banner div:nth-child(2){flex:1}.target-banner strong{display:block;margin-top:5px;font-size:13px}.target-banner code{color:#aaaab0;font-size:11px}.target-banner em{font-style:normal;font-size:9px;letter-spacing:.12em;color:#85868d;border:1px solid #33343a;padding:6px 8px;border-radius:4px}.fallback-note{display:flex;gap:15px;padding:15px 18px;border:1px solid #303137;border-top:0;background:#0d0e10;color:#999aa1;font-size:12px;line-height:1.55}.fallback-note b{white-space:nowrap;color:#c3c3c8;font-size:10px;letter-spacing:.1em}.stats{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid #202126;border-radius:8px;margin:18px 0 65px}.stats div{padding:15px 17px;border-right:1px solid #202126}.stats div:last-child{border:0}.stats b{display:block;font-size:17px;margin-top:6px}.stats .issue{color:#c4c4c9}.section{margin:0 0 54px}.section-heading{display:flex;justify-content:space-between;align-items:end;margin-bottom:12px}.section h2{font-size:17px;margin:6px 0 0}.count{font-size:11px;color:#55565e}.trace-panel{border-top:1px solid #292a2f;border-bottom:1px solid #292a2f}.trace-row{border-bottom:1px solid #1d1e22}.trace-row:last-child{border:0}.trace-summary{width:100%;display:grid;grid-template-columns:35px 24px 1fr auto 22px;gap:8px;align-items:center;padding:13px 4px;background:none;border:0;color:#a9aab0;text-align:left}.trace-summary:disabled{cursor:default}.index{color:#4e4f56;font-size:10px}.status{font-size:13px}.label{font-size:13px}.state{font-size:9px;letter-spacing:.12em;color:#5d5e65}.success .status{color:#b5b5ba}.warning .status,.error .status{color:#d0d0d4}.info .status,.skipped .status{color:#777880}.details{padding:0 4px 15px 67px}.detail-value{position:relative;background:#0d0e10;border:1px solid #1e1f23;padding:12px}.detail-value span{display:block;color:#55565e;font-size:9px;letter-spacing:.12em;margin-bottom:7px}.detail-value code{display:block;color:#9fa0a7;font-size:11px;word-break:break-all;padding-right:55px}.detail-value button{position:absolute;right:8px;top:9px;background:none;border:1px solid #303137;color:#777880;font-size:8px;padding:5px}.details p{color:#777880;font-size:12px;line-height:1.55}.diagnostic{display:flex;gap:15px;align-items:flex-start;border:1px solid #303137;padding:18px;border-radius:8px}.diagnostic>b{font-size:18px}.diagnostic strong{font-size:14px}.diagnostic p{margin:6px 0 0;color:#777880;font:13px/1.5 ui-sans-serif,system-ui,sans-serif}.diagnostic>span{margin-left:auto;color:#777880;font-size:9px;letter-spacing:.12em}.diagnostic-detail{display:flex;gap:12px;padding:14px 3px;border-bottom:1px solid #1d1e22}.diagnostic-detail>div{flex:1}.diagnostic-detail b{color:#8b8c93}.diagnostic-detail strong{font-size:12px}.diagnostic-detail p{margin:5px 0 0;color:#777880;font-size:11px;line-height:1.5}.empty{position:relative;min-height:250px;border:1px dashed #292a2f;border-radius:9px;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#66676f}.empty>b{font-size:28px;margin-bottom:12px}.empty strong{font-size:11px;letter-spacing:.14em}.empty p{font:13px ui-sans-serif,system-ui,sans-serif}.empty{background:linear-gradient(135deg,rgba(255,255,255,.015),transparent)}footer{display:flex;justify-content:space-between;color:#4e4f56;font-size:9px;letter-spacing:.1em;margin-top:45px}@media(max-width:760px){.shell{padding:18px 16px 50px}.hero{grid-template-columns:1fr;gap:28px;padding:50px 0 30px}.hero-meta{display:none}.overview{grid-template-columns:1fr;gap:25px}.address{border-left:0;border-top:1px solid #24252a;padding:18px 0 0}.stats{grid-template-columns:1fr 1fr}.stats div:nth-child(2){border-right:0}.stats div:nth-child(-n+2){border-bottom:1px solid #202126}.target-banner{align-items:flex-start;flex-wrap:wrap}.target-banner code{order:3}.target-banner em{margin-left:auto}.fallback-note{flex-direction:column;gap:6px}.trace-summary{grid-template-columns:28px 20px 1fr 20px}.state{display:none}footer{flex-direction:column;gap:8px}}
+    `}</style>
+  </main>;
 }
