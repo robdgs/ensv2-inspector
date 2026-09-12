@@ -77,6 +77,53 @@ async function resolveOnMainnet(normalizedName: string, node: Hex, trace: Inspec
   }
 }
 
+async function resolveWithKnownResolver(
+  normalizedName: string,
+  node: Hex,
+  resolver: Address,
+  trace: InspectionResult["trace"],
+) {
+  const encodedName = dnsEncode(normalizedName);
+  const resolverData = encodeFunctionData({ abi: resolverAbi, functionName: "addr", args: [node] });
+  const overrideData = encodeFunctionData({
+    abi: universalResolverAbi,
+    functionName: "resolveWithResolver",
+    args: [resolver, encodedName, resolverData, []],
+  });
+
+  trace.push(traceStep(
+    "resolve-override-call",
+    "Resolve with traced longest-suffix resolver",
+    "warning",
+    overrideData,
+    "Universal Resolver V2 findResolver() returned zero, but direct registry traversal found a resolver. The inspector is bypassing the inconsistent lookup result to verify the resolver itself.",
+  ));
+
+  try {
+    const rawResult = await rawCall(ensClient, UNIVERSAL_RESOLVER_V2_SEPOLIA, overrideData);
+    trace.push(traceStep("resolve-override-result", "Read resolver override result", "success", rawResult));
+    const address = decodeFunctionResult({ abi: resolverAbi, functionName: "addr", data: rawResult }) as Address;
+    const found = address !== ZERO_ADDRESS;
+    trace.push(traceStep(
+      "resolve-override-address",
+      "Decode inherited address record",
+      found ? "success" : "warning",
+      address,
+      found ? undefined : "The traced resolver executed successfully but returned the zero address.",
+    ));
+    return { success: found, address };
+  } catch (error) {
+    trace.push(traceStep(
+      "resolve-override-error",
+      "Resolver override failed",
+      "error",
+      undefined,
+      error instanceof Error ? error.message : String(error),
+    ));
+    return { success: false as const };
+  }
+}
+
 export async function inspectEns(input: string): Promise<InspectionResult> {
   const trace = [] as InspectionResult["trace"];
   const value = input.trim();
@@ -170,13 +217,30 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
     trace.push(traceStep("resolver-lookup-call", "Find resolver with Universal Resolver V2", "success", resolverLookupData));
     const resolverLookupRaw = await rawCall(ensClient, UNIVERSAL_RESOLVER_V2_SEPOLIA, resolverLookupData);
     const [resolverAddress, resolverNode, resolverOffset] = decodeFunctionResult({ abi: universalResolverAbi, functionName: "findResolver", data: resolverLookupRaw });
-    trace.push(traceStep("resolver", "Longest-suffix resolver", resolverAddress !== ZERO_ADDRESS ? "success" : "warning", `${resolverAddress} · node ${resolverNode} · offset ${resolverOffset}${deepestResolver !== ZERO_ADDRESS ? ` · trace=${deepestResolver}` : ""}`, resolverAddress === ZERO_ADDRESS ? "No resolver was found for this name" : undefined));
+    trace.push(traceStep("resolver", "Longest-suffix resolver", resolverAddress !== ZERO_ADDRESS ? "success" : "warning", `${resolverAddress} · node ${resolverNode} · offset ${resolverOffset}${deepestResolver !== ZERO_ADDRESS ? ` · trace=${deepestResolver}` : ""}`, resolverAddress === ZERO_ADDRESS ? (deepestResolver !== ZERO_ADDRESS ? "Universal Resolver returned no resolver, but direct ENSv2 registry traversal found an inherited resolver. This is an inconsistency in the resolution path." : "No resolver was found for this name") : undefined));
     if (deepestResolver !== ZERO_ADDRESS) {
       trace.push(traceStep("resolver-path", "Resolver matched at registry label", deepestResolver === resolverAddress ? "success" : "warning", `${deepestResolver} · ${deepestResolverLabel}`, deepestResolver === resolverAddress ? undefined : "The manually traced resolver differs from Universal Resolver findResolver(). Inspect the registry traversal."));
     }
 
+    if (resolverAddress === ZERO_ADDRESS && deepestResolver !== ZERO_ADDRESS) {
+      const override = await resolveWithKnownResolver(normalizedName, node, deepestResolver, trace);
+      if (override.success) {
+        return {
+          input,
+          normalizedName,
+          node,
+          network: "sepolia",
+          mode: "ensv2",
+          registry: { address: registries[0], found: registries.length > 0 },
+          resolver: { address: deepestResolver, found: true },
+          address: override.address,
+          trace,
+        };
+      }
+    }
+
     if (resolverAddress === ZERO_ADDRESS) {
-      trace.push(traceStep("resolve-skipped", "Call Universal Resolver V2", "skipped", undefined, "Skipped because findResolver() returned the zero address. There is no resolver available to execute the addr() record lookup."));
+      trace.push(traceStep("resolve-skipped", "Call Universal Resolver V2", "skipped", undefined, "Skipped because findResolver() returned the zero address and no resolver was recovered from the direct registry traversal."));
 
       const mainnet = await resolveOnMainnet(normalizedName, node, trace);
       if (mainnet.success) {
