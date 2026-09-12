@@ -1,4 +1,4 @@
-export type TraceStatus = "success" | "warning" | "error" | "skipped";
+export type TraceStatus = "success" | "info" | "warning" | "error" | "skipped";
 
 export interface TraceStep {
   id: string;
