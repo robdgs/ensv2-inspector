@@ -16,6 +16,18 @@ export interface Diagnostic {
   suggestions: string[];
 }
 
+// One node per label walked during registry traversal (root -> tld -> ... -> leaf).
+// This is the data the RegistryGraph component renders as a tree, so it's kept
+// deliberately flat and small rather than re-deriving it from the raw trace.
+export interface RegistryPathNode {
+  label: string;
+  fullName: string;
+  registry: string;
+  resolver?: string;
+  hasResolver: boolean;
+  isLeaf: boolean;
+}
+
 export interface InspectionResult {
   input: string;
   normalizedName?: string;
@@ -27,6 +39,8 @@ export interface InspectionResult {
   address?: string;
   reverseName?: string;
   forwardReverseMatch?: boolean;
+  registryPath?: RegistryPathNode[];
+  usedCcipRead?: boolean;
   trace: TraceStep[];
   diagnostics?: Diagnostic[];
 }

@@ -1,5 +1,6 @@
 import { createPublicClient, fallback, http } from "viem";
 import { mainnet, sepolia } from "viem/chains";
+import { tracingCcipRequest } from "@/src/ens/ccip";
 
 // A bare http() transport uses viem's single built-in default public RPC.
 // That endpoint is frequently rate-limited or briefly unreachable when this
@@ -15,6 +16,9 @@ export const ensClient = createPublicClient({
     http("https://rpc.sepolia.org"),
     http(),
   ]),
+  // Keep CCIP-Read enabled (this is the default), but route it through our
+  // own wrapper so every offchain gateway round-trip shows up in the trace.
+  ccipRead: { request: tracingCcipRequest },
 });
 
 export const mainnetEnsClient = createPublicClient({
@@ -24,4 +28,5 @@ export const mainnetEnsClient = createPublicClient({
     http("https://cloudflare-eth.com"),
     http(),
   ]),
+  ccipRead: { request: tracingCcipRequest },
 });

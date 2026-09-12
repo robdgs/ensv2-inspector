@@ -12,7 +12,8 @@ import { ensClient, mainnetEnsClient } from "@/src/lib/viem";
 import { registryAbi, resolverAbi, universalResolverAbi } from "@/src/ens/abi";
 import { UNIVERSAL_RESOLVER, UNIVERSAL_RESOLVER_V2_SEPOLIA } from "@/src/ens/raw";
 import { traceStep } from "@/src/ens/trace";
-import type { InspectionResult } from "@/src/types/ens";
+import { ccipTraceContext } from "@/src/ens/ccip";
+import type { InspectionResult, RegistryPathNode } from "@/src/types/ens";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
 const ETH_COIN_TYPE = 60n;
@@ -126,6 +127,14 @@ async function resolveWithKnownResolver(
 
 export async function inspectEns(input: string): Promise<InspectionResult> {
   const trace = [] as InspectionResult["trace"];
+  // Every rawCall() made anywhere below runs inside this context, so if any
+  // resolver reverts with OffchainLookup, tracingCcipRequest (wired up in
+  // src/lib/viem.ts) can find this same trace array via AsyncLocalStorage
+  // and append the gateway request/response as visible steps.
+  return ccipTraceContext.run(trace, () => runInspection(input, trace));
+}
+
+async function runInspection(input: string, trace: InspectionResult["trace"]): Promise<InspectionResult> {
   const value = input.trim();
 
   if (!value) {
@@ -174,6 +183,7 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
 
   trace.push(traceStep("normalize", "Normalize ENS name", normalizationFallback ? "warning" : "success", normalizedName, normalizationFallback ? "Used the narrow ASCII DNS-compatible fallback after viem rejected the input." : undefined));
   const node = namehash(normalizedName);
+  const registryPath: RegistryPathNode[] = [];
 
   try {
     const encodedName = dnsEncode(normalizedName);
@@ -190,6 +200,8 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
 
     for (const [index, label] of labels.entries()) {
       if (currentRegistry === ZERO_ADDRESS) break;
+      const fullName = labels.slice(0, index + 1).reverse().join(".");
+
       const resolverData = encodeFunctionData({ abi: registryAbi, functionName: "getResolver", args: [label] });
       trace.push(traceStep(`resolver-${index}-call`, `getResolver("${label}") @ ${shortAddress(currentRegistry)}`, "success", resolverData));
       const resolverRaw = await rawCall(ensClient, currentRegistry, resolverData);
@@ -197,13 +209,26 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
       trace.push(traceStep(`resolver-${index}-result`, `Resolver for ${label}`, labelResolver !== ZERO_ADDRESS ? "success" : "info", `${labelResolver} · registry=${currentRegistry}`, labelResolver === ZERO_ADDRESS ? `No resolver configured at ${label}; resolution can inherit a resolver from a suffix registry.` : undefined));
       if (labelResolver !== ZERO_ADDRESS) {
         deepestResolver = labelResolver;
-        deepestResolverLabel = labels.slice(0, index + 1).reverse().join(".");
+        deepestResolverLabel = fullName;
       }
+
       const subregistryData = encodeFunctionData({ abi: registryAbi, functionName: "getSubregistry", args: [label] });
       trace.push(traceStep(`subregistry-${index}-call`, `getSubregistry("${label}") @ ${shortAddress(currentRegistry)}`, "success", subregistryData));
       const subregistryRaw = await rawCall(ensClient, currentRegistry, subregistryData);
       const nextRegistry = decodeFunctionResult({ abi: registryAbi, functionName: "getSubregistry", data: subregistryRaw }) as Address;
       trace.push(traceStep(`subregistry-${index}-result`, `Subregistry for ${label}`, nextRegistry !== ZERO_ADDRESS ? "success" : "info", nextRegistry, nextRegistry === ZERO_ADDRESS ? `${label} is a leaf registry; no deeper subregistry exists.` : undefined));
+
+      // One node per label walked, independent of the free-text trace above —
+      // this is what RegistryGraph.tsx renders as a tree in the UI.
+      registryPath.push({
+        label,
+        fullName,
+        registry: currentRegistry,
+        resolver: labelResolver !== ZERO_ADDRESS ? labelResolver : undefined,
+        hasResolver: labelResolver !== ZERO_ADDRESS,
+        isLeaf: nextRegistry === ZERO_ADDRESS,
+      });
+
       currentRegistry = nextRegistry;
     }
 
@@ -222,18 +247,20 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
       trace.push(traceStep("resolver-path", "Resolver matched at registry label", deepestResolver === resolverAddress ? "success" : "warning", `${deepestResolver} · ${deepestResolverLabel}`, deepestResolver === resolverAddress ? undefined : "The manually traced resolver differs from Universal Resolver findResolver(). Inspect the registry traversal."));
     }
 
+    const usedCcipRead = trace.some((step) => step.id.startsWith("ccip-read-"));
+
     if (resolverAddress === ZERO_ADDRESS && deepestResolver !== ZERO_ADDRESS) {
       const override = await resolveWithKnownResolver(normalizedName, node, deepestResolver, trace);
       if (override.success) {
-        return { input, normalizedName, node, network: "sepolia", mode: "ensv2", registry: { address: registries[0], found: registries.length > 0 }, resolver: { address: deepestResolver, found: true }, address: override.address, trace };
+        return { input, normalizedName, node, network: "sepolia", mode: "ensv2", registry: { address: registries[0], found: registries.length > 0 }, resolver: { address: deepestResolver, found: true }, address: override.address, registryPath, usedCcipRead, trace };
       }
     }
 
     if (resolverAddress === ZERO_ADDRESS) {
       trace.push(traceStep("resolve-skipped", "Call Universal Resolver V2", "skipped", undefined, "Skipped because findResolver() returned the zero address and no resolver was recovered from the direct registry traversal."));
       const mainnet = await resolveOnMainnet(normalizedName, node, trace, "Sepolia ENSv2 has no resolver for this name; checking whether the same name exists on Ethereum Mainnet.");
-      if (mainnet.success) return { input, normalizedName, node, network: "mainnet", mode: "legacy-fallback", registry: { found: false }, resolver: { found: false }, address: mainnet.address, trace };
-      return { input, normalizedName, node, network: "sepolia", mode: "ensv2", registry: { address: registries[0], found: registries.length > 0 }, resolver: { address: resolverAddress, found: false }, trace };
+      if (mainnet.success) return { input, normalizedName, node, network: "mainnet", mode: "legacy-fallback", registry: { found: false }, resolver: { found: false }, address: mainnet.address, registryPath, usedCcipRead, trace };
+      return { input, normalizedName, node, network: "sepolia", mode: "ensv2", registry: { address: registries[0], found: registries.length > 0 }, resolver: { address: resolverAddress, found: false }, registryPath, usedCcipRead, trace };
     }
 
     const resolverData = encodeFunctionData({ abi: resolverAbi, functionName: "addr", args: [node] });
@@ -247,21 +274,23 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
       const address = decodeFunctionResult({ abi: resolverAbi, functionName: "addr", data: result }) as Address;
       const found = address !== ZERO_ADDRESS;
       trace.push(traceStep("address", "Decode address record", found ? "success" : "warning", address, found ? undefined : "Resolver returned the zero address"));
-      if (found) return { input, normalizedName, node, network: "sepolia", mode: "ensv2", registry: { address: registries[0], found: registries.length > 0 }, resolver: { address: resolverAddress, found: true }, address, trace };
+      const usedCcipReadFinal = trace.some((step) => step.id.startsWith("ccip-read-"));
+      if (found) return { input, normalizedName, node, network: "sepolia", mode: "ensv2", registry: { address: registries[0], found: registries.length > 0 }, resolver: { address: resolverAddress, found: true }, address, registryPath, usedCcipRead: usedCcipReadFinal, trace };
 
       const mainnet = await resolveOnMainnet(normalizedName, node, trace, "Sepolia found a resolver, but the ENS address record is empty; checking Ethereum Mainnet.");
-      if (mainnet.success) return { input, normalizedName, node, network: "mainnet", mode: "legacy-fallback", registry: { found: false }, resolver: { found: false }, address: mainnet.address, trace };
-      return { input, normalizedName, node, network: "sepolia", mode: "ensv2", registry: { address: registries[0], found: registries.length > 0 }, resolver: { address: resolverAddress, found: true }, address, trace };
+      if (mainnet.success) return { input, normalizedName, node, network: "mainnet", mode: "legacy-fallback", registry: { found: false }, resolver: { found: false }, address: mainnet.address, registryPath, usedCcipRead: usedCcipReadFinal, trace };
+      return { input, normalizedName, node, network: "sepolia", mode: "ensv2", registry: { address: registries[0], found: registries.length > 0 }, resolver: { address: resolverAddress, found: true }, address, registryPath, usedCcipRead: usedCcipReadFinal, trace };
     } catch (sepoliaError) {
       trace.push(traceStep("resolve-sepolia-error", "Sepolia ENSv2 resolution failed", "error", undefined, sepoliaError instanceof Error ? sepoliaError.message : String(sepoliaError)));
       const mainnet = await resolveOnMainnet(normalizedName, node, trace, "Sepolia ENSv2 resolution reverted; checking whether the same name resolves on Ethereum Mainnet.");
-      if (mainnet.success) return { input, normalizedName, node, network: "mainnet", mode: "legacy-fallback", registry: { found: false }, resolver: { found: false }, address: mainnet.address, trace };
-      return { input, normalizedName, node, network: "sepolia", mode: "ensv2", registry: { address: registries[0], found: registries.length > 0 }, resolver: { address: resolverAddress, found: true }, trace };
+      if (mainnet.success) return { input, normalizedName, node, network: "mainnet", mode: "legacy-fallback", registry: { found: false }, resolver: { found: false }, address: mainnet.address, registryPath, usedCcipRead, trace };
+      return { input, normalizedName, node, network: "sepolia", mode: "ensv2", registry: { address: registries[0], found: registries.length > 0 }, resolver: { address: resolverAddress, found: true }, registryPath, usedCcipRead, trace };
     }
   } catch (error) {
     trace.push(traceStep("resolution", "ENSv2 resolution", "error", undefined, error instanceof Error ? error.message : String(error)));
     const mainnet = await resolveOnMainnet(normalizedName, node, trace, "Sepolia ENSv2 inspection failed before a usable resolution result was obtained; checking Ethereum Mainnet.");
-    if (mainnet.success) return { input, normalizedName, node, network: "mainnet", mode: "legacy-fallback", registry: { found: false }, resolver: { found: false }, address: mainnet.address, trace };
-    return { input, normalizedName, node, network: "sepolia", mode: "ensv2", trace };
+    const usedCcipRead = trace.some((step) => step.id.startsWith("ccip-read-"));
+    if (mainnet.success) return { input, normalizedName, node, network: "mainnet", mode: "legacy-fallback", registry: { found: false }, resolver: { found: false }, address: mainnet.address, registryPath, usedCcipRead, trace };
+    return { input, normalizedName, node, network: "sepolia", mode: "ensv2", registryPath, usedCcipRead, trace };
   }
 }
