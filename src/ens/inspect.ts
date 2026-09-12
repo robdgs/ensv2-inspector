@@ -29,6 +29,34 @@ function dnsEncode(name: string): Hex {
   return bytesToHex(Uint8Array.from(bytes));
 }
 
+/**
+ * viem's ENS normalizer is the preferred path, but the ENSv2 readiness
+ * fixture `ur.integration-tests.eth` is an ASCII DNS-compatible name and
+ * must be accepted by the debugger even when the installed normalizer
+ * rejects that fixture. Keep the fallback deliberately narrow: only
+ * lowercaseable ASCII LDH labels are accepted, so arbitrary invalid ENS
+ * input is not silently treated as valid.
+ */
+function normalizeEnsName(input: string): { name: string; usedFallback: boolean } {
+  try {
+    return { name: normalize(input), usedFallback: false };
+  } catch (error) {
+    const name = input.toLowerCase().replace(/^\.|\.$/g, "");
+    const labels = name.split(".");
+    const valid =
+      labels.length > 0 &&
+      labels.every(
+        (label) =>
+          label.length > 0 &&
+          label.length <= 63 &&
+          /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label),
+      );
+
+    if (!valid) throw error;
+    return { name, usedFallback: true };
+  }
+}
+
 async function rawCall(to: Address, data: Hex) {
   const response = await ensClient.call({ to, data });
   if (!response.data) throw new Error(`Empty RPC result from ${to}`);
@@ -74,14 +102,27 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
   }
 
   let normalizedName: string;
+  let normalizationFallback = false;
   try {
-    normalizedName = normalize(value);
+    const normalized = normalizeEnsName(value);
+    normalizedName = normalized.name;
+    normalizationFallback = normalized.usedFallback;
   } catch (error) {
     trace.push(traceStep("normalize", "Normalize ENS name", "error", undefined, `Invalid ENS name: ${value}${error instanceof Error ? ` (${error.message})` : ""}`));
     return { input, trace };
   }
 
-  trace.push(traceStep("normalize", "Normalize ENS name", "success", normalizedName));
+  trace.push(
+    traceStep(
+      "normalize",
+      "Normalize ENS name",
+      normalizationFallback ? "warning" : "success",
+      normalizedName,
+      normalizationFallback
+        ? "viem rejected this ASCII DNS-compatible label set; using the narrow LDH fallback required for the ENSv2 readiness fixture"
+        : undefined,
+    ),
+  );
   const node = namehash(normalizedName);
   trace.push(traceStep("namehash", "Calculate ENS node", "success", node));
 
