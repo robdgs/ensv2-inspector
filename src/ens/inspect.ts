@@ -2,6 +2,7 @@ import {
   bytesToHex,
   decodeFunctionResult,
   encodeFunctionData,
+  isAddress,
   namehash,
   normalize,
   type Hex,
@@ -13,6 +14,7 @@ import { traceStep } from "@/src/ens/trace";
 import type { InspectionResult } from "@/src/types/ens";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
+const ETH_COIN_TYPE = 60n;
 
 function dnsEncode(name: string): Hex {
   const labels = name.replace(/^\.|\.$/g, "").split(".");
@@ -41,11 +43,73 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
     return { input, trace };
   }
 
+  // The UI accepts both ENS names and EVM addresses. Addresses must use
+  // reverse resolution; passing an address to viem's ENS normalizer is invalid.
+  if (isAddress(value)) {
+    trace.push(traceStep("input", "Detect input type", "success", "EVM address"));
+
+    try {
+      const reverseData = encodeFunctionData({
+        abi: universalResolverAbi,
+        functionName: "reverse",
+        args: [value as Hex, ETH_COIN_TYPE],
+      });
+
+      trace.push(traceStep("reverse-call", "Reverse-resolve address", "success", reverseData));
+      const reverseRaw = await rawCall(reverseData);
+      trace.push(traceStep("reverse-result", "Read raw reverse result", "success", reverseRaw));
+
+      const [primary, resolver, reverseResolver] = decodeFunctionResult({
+        abi: universalResolverAbi,
+        functionName: "reverse",
+        data: reverseRaw,
+      });
+
+      const found = primary.length > 0;
+      trace.push(
+        traceStep(
+          "reverse",
+          "Decode primary ENS name",
+          found ? "success" : "warning",
+          `${primary || "No primary name"} · resolver=${resolver} · reverseResolver=${reverseResolver}`,
+          found ? undefined : "No verified primary ENS name was found for this address",
+        ),
+      );
+
+      return {
+        input,
+        address: value,
+        reverseName: primary || undefined,
+        forwardReverseMatch: found,
+        trace,
+      };
+    } catch (error) {
+      trace.push(
+        traceStep(
+          "reverse",
+          "Reverse ENS resolution",
+          "error",
+          undefined,
+          error instanceof Error ? error.message : String(error),
+        ),
+      );
+      return { input, address: value, trace };
+    }
+  }
+
   let normalizedName: string;
   try {
     normalizedName = normalize(value);
   } catch {
-    trace.push(traceStep("normalize", "Normalize ENS name", "error", undefined, "Invalid ENS name"));
+    trace.push(
+      traceStep(
+        "normalize",
+        "Normalize ENS name",
+        "error",
+        undefined,
+        `Invalid ENS name: ${value}`,
+      ),
+    );
     return { input, trace };
   }
 
@@ -69,7 +133,15 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
       functionName: "findRegistries",
       data: registriesRaw,
     });
-    trace.push(traceStep("registry", "Decode registry path", registries.length ? "success" : "warning", registries.join(" → "), registries.length ? undefined : "No registry path was found"));
+    trace.push(
+      traceStep(
+        "registry",
+        "Decode registry path",
+        registries.length ? "success" : "warning",
+        registries.join(" → "),
+        registries.length ? undefined : "No registry path was found",
+      ),
+    );
 
     const resolverLookupData = encodeFunctionData({
       abi: universalResolverAbi,
@@ -79,12 +151,20 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
     trace.push(traceStep("resolver-lookup-call", "Find resolver", "success", resolverLookupData));
     const resolverLookupRaw = await rawCall(resolverLookupData);
     trace.push(traceStep("resolver-lookup-result", "Read resolver lookup result", "success", resolverLookupRaw));
-    const [resolverAddress, resolverNode] = decodeFunctionResult({
+    const [resolverAddress, resolverNode, resolverOffset] = decodeFunctionResult({
       abi: universalResolverAbi,
       functionName: "findResolver",
       data: resolverLookupRaw,
     });
-    trace.push(traceStep("resolver", "Decode resolver", resolverAddress !== ZERO_ADDRESS ? "success" : "warning", `${resolverAddress} · node ${resolverNode}`, resolverAddress === ZERO_ADDRESS ? "No resolver was found for this name" : undefined));
+    trace.push(
+      traceStep(
+        "resolver",
+        "Decode resolver",
+        resolverAddress !== ZERO_ADDRESS ? "success" : "warning",
+        `${resolverAddress} · node ${resolverNode} · offset ${resolverOffset}`,
+        resolverAddress === ZERO_ADDRESS ? "No resolver was found for this name" : undefined,
+      ),
+    );
 
     const resolverData = encodeFunctionData({ abi: resolverAbi, functionName: "addr", args: [node] });
     const universalResolverData = encodeFunctionData({
@@ -105,7 +185,15 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
 
     const address = decodeFunctionResult({ abi: resolverAbi, functionName: "addr", data: result });
     const found = address !== ZERO_ADDRESS;
-    trace.push(traceStep("address", "Decode address record", found ? "success" : "warning", address, found ? undefined : "Resolver returned the zero address"));
+    trace.push(
+      traceStep(
+        "address",
+        "Decode address record",
+        found ? "success" : "warning",
+        address,
+        found ? undefined : "Resolver returned the zero address",
+      ),
+    );
 
     return {
       input,
@@ -117,7 +205,15 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
       trace,
     };
   } catch (error) {
-    trace.push(traceStep("resolution", "ENSv2 resolution", "error", undefined, error instanceof Error ? error.message : String(error)));
+    trace.push(
+      traceStep(
+        "resolution",
+        "ENSv2 resolution",
+        "error",
+        undefined,
+        error instanceof Error ? error.message : String(error),
+      ),
+    );
     return { input, normalizedName, node, trace };
   }
 }
