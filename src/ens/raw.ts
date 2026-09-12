@@ -1,14 +1,22 @@
 import { encodeFunctionData, type Hex } from "viem";
 import { resolverAbi, universalResolverAbi } from "@/src/ens/abi";
 
-// Canonical ENS Universal Resolver proxy.
-// ENS documents this address as the public entrypoint on Ethereum mainnet and
-// testnets, including the current ENSv2 Sepolia deployment.
+// Canonical ENS Universal Resolver proxy on Ethereum Mainnet.
+// ENS documents this as the public entrypoint on mainnet.
 export const UNIVERSAL_RESOLVER = "0xeEeEEEeE14D718C2B47D9923Deab1335E144EeEe" as const;
 
-// Keep a semantic alias for the inspector's ENSv2 execution target.
-// Do not pin an implementation address: the canonical proxy is upgradeable.
-export const UNIVERSAL_RESOLVER_V2_SEPOLIA = UNIVERSAL_RESOLVER;
+// ENSv2 Universal Resolver V2, deployed separately on Sepolia for testing.
+//
+// IMPORTANT: this is NOT the same contract as UNIVERSAL_RESOLVER above.
+// The mainnet canonical proxy address also happens to exist on Sepolia (as
+// the legacy Universal Resolver), but it does not implement the ENSv2-only
+// registry-navigation functions this inspector relies on (ROOT_REGISTRY(),
+// findRegistries(), findResolver() against the new registry hierarchy).
+// Aliasing this to UNIVERSAL_RESOLVER made every Sepolia call target the
+// wrong contract, so it reverted before any real ENSv2 inspection happened
+// and the tool silently fell back to mainnet for every single lookup.
+export const UNIVERSAL_RESOLVER_V2_SEPOLIA =
+  "0x2f8a180604c42457cb56c7c4f708748ff1f91df1" as const;
 
 export function buildAddressResolutionCall(name: Hex, node: Hex) {
   const data = encodeFunctionData({
