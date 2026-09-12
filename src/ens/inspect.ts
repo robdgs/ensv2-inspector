@@ -29,29 +29,15 @@ function dnsEncode(name: string): Hex {
   return bytesToHex(Uint8Array.from(bytes));
 }
 
-/**
- * viem's ENS normalizer is the preferred path, but the ENSv2 readiness
- * fixture `ur.integration-tests.eth` is an ASCII DNS-compatible name and
- * must be accepted by the debugger even when the installed normalizer
- * rejects that fixture. Keep the fallback deliberately narrow: only
- * lowercaseable ASCII LDH labels are accepted, so arbitrary invalid ENS
- * input is not silently treated as valid.
- */
 function normalizeEnsName(input: string): { name: string; usedFallback: boolean } {
   try {
     return { name: normalize(input), usedFallback: false };
   } catch (error) {
     const name = input.toLowerCase().replace(/^\.|\.$/g, "");
     const labels = name.split(".");
-    const valid =
-      labels.length > 0 &&
-      labels.every(
-        (label) =>
-          label.length > 0 &&
-          label.length <= 63 &&
-          /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label),
-      );
-
+    const valid = labels.length > 0 && labels.every(
+      (label) => label.length > 0 && label.length <= 63 && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label),
+    );
     if (!valid) throw error;
     return { name, usedFallback: true };
   }
@@ -79,19 +65,11 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
   if (isAddress(value)) {
     trace.push(traceStep("input", "Detect input type", "success", "EVM address"));
     try {
-      const reverseData = encodeFunctionData({
-        abi: universalResolverAbi,
-        functionName: "reverse",
-        args: [value as Hex, ETH_COIN_TYPE],
-      });
+      const reverseData = encodeFunctionData({ abi: universalResolverAbi, functionName: "reverse", args: [value as Hex, ETH_COIN_TYPE] });
       trace.push(traceStep("reverse-call", "Reverse-resolve address", "success", reverseData));
       const reverseRaw = await rawCall(UNIVERSAL_RESOLVER, reverseData);
       trace.push(traceStep("reverse-result", "Read raw reverse result", "success", reverseRaw));
-      const [primary, resolver, reverseResolver] = decodeFunctionResult({
-        abi: universalResolverAbi,
-        functionName: "reverse",
-        data: reverseRaw,
-      });
+      const [primary, resolver, reverseResolver] = decodeFunctionResult({ abi: universalResolverAbi, functionName: "reverse", data: reverseRaw });
       const found = primary.length > 0;
       trace.push(traceStep("reverse", "Decode primary ENS name", found ? "success" : "warning", `${primary || "No primary name"} · resolver=${resolver} · reverseResolver=${reverseResolver}`, found ? undefined : "No verified primary ENS name was found for this address"));
       return { input, address: value, reverseName: primary || undefined, forwardReverseMatch: found, trace };
@@ -112,17 +90,13 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
     return { input, trace };
   }
 
-  trace.push(
-    traceStep(
-      "normalize",
-      "Normalize ENS name",
-      normalizationFallback ? "warning" : "success",
-      normalizedName,
-      normalizationFallback
-        ? "viem rejected this ASCII DNS-compatible label set; using the narrow LDH fallback required for the ENSv2 readiness fixture"
-        : undefined,
-    ),
-  );
+  trace.push(traceStep(
+    "normalize",
+    "Normalize ENS name",
+    normalizationFallback ? "warning" : "success",
+    normalizedName,
+    normalizationFallback ? "Used the narrow ASCII DNS-compatible fallback after viem rejected the input." : undefined,
+  ));
   const node = namehash(normalizedName);
   trace.push(traceStep("namehash", "Calculate ENS node", "success", node));
 
@@ -130,18 +104,10 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
     const encodedName = dnsEncode(normalizedName);
     const labels = normalizedName.split(".").filter(Boolean).reverse();
 
-    const rootData = encodeFunctionData({
-      abi: universalResolverAbi,
-      functionName: "ROOT_REGISTRY",
-      args: [],
-    });
+    const rootData = encodeFunctionData({ abi: universalResolverAbi, functionName: "ROOT_REGISTRY", args: [] });
     trace.push(traceStep("root-call", "Read ENSv2 root registry", "success", rootData));
     const rootRaw = await rawCall(UNIVERSAL_RESOLVER, rootData);
-    const rootRegistry = decodeFunctionResult({
-      abi: universalResolverAbi,
-      functionName: "ROOT_REGISTRY",
-      data: rootRaw,
-    }) as Address;
+    const rootRegistry = decodeFunctionResult({ abi: universalResolverAbi, functionName: "ROOT_REGISTRY", data: rootRaw }) as Address;
     trace.push(traceStep("root", "ROOT REGISTRY", rootRegistry !== ZERO_ADDRESS ? "success" : "error", rootRegistry, rootRegistry === ZERO_ADDRESS ? "Universal Resolver returned a zero root registry" : undefined));
 
     let currentRegistry = rootRegistry;
@@ -149,43 +115,36 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
     let deepestResolverLabel = "";
 
     for (const [index, label] of labels.entries()) {
-      if (currentRegistry === ZERO_ADDRESS) {
-        trace.push(traceStep(`registry-${index}-skipped`, `Registry for ${label}`, "skipped", undefined, "Parent registry is address(0), so traversal cannot continue"));
-        break;
-      }
+      if (currentRegistry === ZERO_ADDRESS) break;
 
-      const resolverData = encodeFunctionData({
-        abi: registryAbi,
-        functionName: "getResolver",
-        args: [label],
-      });
+      const resolverData = encodeFunctionData({ abi: registryAbi, functionName: "getResolver", args: [label] });
       trace.push(traceStep(`resolver-${index}-call`, `getResolver("${label}") @ ${shortAddress(currentRegistry)}`, "success", resolverData));
       const resolverRaw = await rawCall(currentRegistry, resolverData);
-      const labelResolver = decodeFunctionResult({
-        abi: registryAbi,
-        functionName: "getResolver",
-        data: resolverRaw,
-      }) as Address;
-      trace.push(traceStep(`resolver-${index}-result`, `Resolver for ${label}`, labelResolver !== ZERO_ADDRESS ? "success" : "warning", `${labelResolver} · registry=${currentRegistry}`, labelResolver === ZERO_ADDRESS ? `No resolver configured at ${label}. An ancestor resolver may still serve the name.` : undefined));
+      const labelResolver = decodeFunctionResult({ abi: registryAbi, functionName: "getResolver", data: resolverRaw }) as Address;
+      trace.push(traceStep(
+        `resolver-${index}-result`,
+        `Resolver for ${label}`,
+        labelResolver !== ZERO_ADDRESS ? "success" : "info",
+        `${labelResolver} · registry=${currentRegistry}`,
+        labelResolver === ZERO_ADDRESS ? `No resolver configured at ${label}; resolution can inherit a resolver from a suffix registry.` : undefined,
+      ));
 
       if (labelResolver !== ZERO_ADDRESS) {
         deepestResolver = labelResolver;
         deepestResolverLabel = labels.slice(0, index + 1).reverse().join(".");
       }
 
-      const subregistryData = encodeFunctionData({
-        abi: registryAbi,
-        functionName: "getSubregistry",
-        args: [label],
-      });
+      const subregistryData = encodeFunctionData({ abi: registryAbi, functionName: "getSubregistry", args: [label] });
       trace.push(traceStep(`subregistry-${index}-call`, `getSubregistry("${label}") @ ${shortAddress(currentRegistry)}`, "success", subregistryData));
       const subregistryRaw = await rawCall(currentRegistry, subregistryData);
-      const nextRegistry = decodeFunctionResult({
-        abi: registryAbi,
-        functionName: "getSubregistry",
-        data: subregistryRaw,
-      }) as Address;
-      trace.push(traceStep(`subregistry-${index}-result`, `Subregistry for ${label}`, nextRegistry !== ZERO_ADDRESS ? "success" : "warning", nextRegistry, nextRegistry === ZERO_ADDRESS ? `No subregistry exists for ${label}; traversal stops here.` : undefined));
+      const nextRegistry = decodeFunctionResult({ abi: registryAbi, functionName: "getSubregistry", data: subregistryRaw }) as Address;
+      trace.push(traceStep(
+        `subregistry-${index}-result`,
+        `Subregistry for ${label}`,
+        nextRegistry !== ZERO_ADDRESS ? "success" : "info",
+        nextRegistry,
+        nextRegistry === ZERO_ADDRESS ? `${label} is a leaf registry; no deeper subregistry exists.` : undefined,
+      ));
 
       currentRegistry = nextRegistry;
     }
@@ -216,15 +175,7 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
     const found = address !== ZERO_ADDRESS;
     trace.push(traceStep("address", "Decode address record", found ? "success" : "warning", address, found ? undefined : "Resolver returned the zero address"));
 
-    return {
-      input,
-      normalizedName,
-      node,
-      registry: { address: registries[0], found: registries.length > 0 },
-      resolver: { address: resolverAddress, found: resolverAddress !== ZERO_ADDRESS },
-      address,
-      trace,
-    };
+    return { input, normalizedName, node, registry: { address: registries[0], found: registries.length > 0 }, resolver: { address: resolverAddress, found: resolverAddress !== ZERO_ADDRESS }, address, trace };
   } catch (error) {
     trace.push(traceStep("resolution", "ENSv2 resolution", "error", undefined, error instanceof Error ? error.message : String(error)));
     return { input, normalizedName, node, trace };
