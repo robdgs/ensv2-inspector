@@ -8,11 +8,11 @@
     "start": "next start"
   },
   "dependencies": {
-    "@arkiv-network/sdk": "latest",
+    "@arkiv-network/sdk": "0.8.0",
     "next": "^15.5.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "viem": "^2.35.0"
+    "viem": "^2.56.3"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
