@@ -10,7 +10,7 @@ import {
 import { normalize } from "viem/ens";
 import { ensClient } from "@/src/lib/viem";
 import { registryAbi, resolverAbi, universalResolverAbi } from "@/src/ens/abi";
-import { UNIVERSAL_RESOLVER } from "@/src/ens/raw";
+import { UNIVERSAL_RESOLVER_V2_SEPOLIA } from "@/src/ens/raw";
 import { traceStep } from "@/src/ens/trace";
 import type { InspectionResult } from "@/src/types/ens";
 
@@ -67,7 +67,7 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
     try {
       const reverseData = encodeFunctionData({ abi: universalResolverAbi, functionName: "reverse", args: [value as Hex, ETH_COIN_TYPE] });
       trace.push(traceStep("reverse-call", "Reverse-resolve address", "success", reverseData));
-      const reverseRaw = await rawCall(UNIVERSAL_RESOLVER, reverseData);
+      const reverseRaw = await rawCall(UNIVERSAL_RESOLVER_V2_SEPOLIA, reverseData);
       trace.push(traceStep("reverse-result", "Read raw reverse result", "success", reverseRaw));
       const [primary, resolver, reverseResolver] = decodeFunctionResult({ abi: universalResolverAbi, functionName: "reverse", data: reverseRaw });
       const found = primary.length > 0;
@@ -90,23 +90,16 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
     return { input, trace };
   }
 
-  trace.push(traceStep(
-    "normalize",
-    "Normalize ENS name",
-    normalizationFallback ? "warning" : "success",
-    normalizedName,
-    normalizationFallback ? "Used the narrow ASCII DNS-compatible fallback after viem rejected the input." : undefined,
-  ));
+  trace.push(traceStep("normalize", "Normalize ENS name", normalizationFallback ? "warning" : "success", normalizedName, normalizationFallback ? "Used the narrow ASCII DNS-compatible fallback after viem rejected the input." : undefined));
   const node = namehash(normalizedName);
   trace.push(traceStep("namehash", "Calculate ENS node", "success", node));
 
   try {
     const encodedName = dnsEncode(normalizedName);
     const labels = normalizedName.split(".").filter(Boolean).reverse();
-
     const rootData = encodeFunctionData({ abi: universalResolverAbi, functionName: "ROOT_REGISTRY", args: [] });
     trace.push(traceStep("root-call", "Read ENSv2 root registry", "success", rootData));
-    const rootRaw = await rawCall(UNIVERSAL_RESOLVER, rootData);
+    const rootRaw = await rawCall(UNIVERSAL_RESOLVER_V2_SEPOLIA, rootData);
     const rootRegistry = decodeFunctionResult({ abi: universalResolverAbi, functionName: "ROOT_REGISTRY", data: rootRaw }) as Address;
     trace.push(traceStep("root", "ROOT REGISTRY", rootRegistry !== ZERO_ADDRESS ? "success" : "error", rootRegistry, rootRegistry === ZERO_ADDRESS ? "Universal Resolver returned a zero root registry" : undefined));
 
@@ -116,48 +109,32 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
 
     for (const [index, label] of labels.entries()) {
       if (currentRegistry === ZERO_ADDRESS) break;
-
       const resolverData = encodeFunctionData({ abi: registryAbi, functionName: "getResolver", args: [label] });
       trace.push(traceStep(`resolver-${index}-call`, `getResolver("${label}") @ ${shortAddress(currentRegistry)}`, "success", resolverData));
       const resolverRaw = await rawCall(currentRegistry, resolverData);
       const labelResolver = decodeFunctionResult({ abi: registryAbi, functionName: "getResolver", data: resolverRaw }) as Address;
-      trace.push(traceStep(
-        `resolver-${index}-result`,
-        `Resolver for ${label}`,
-        labelResolver !== ZERO_ADDRESS ? "success" : "info",
-        `${labelResolver} · registry=${currentRegistry}`,
-        labelResolver === ZERO_ADDRESS ? `No resolver configured at ${label}; resolution can inherit a resolver from a suffix registry.` : undefined,
-      ));
-
+      trace.push(traceStep(`resolver-${index}-result`, `Resolver for ${label}`, labelResolver !== ZERO_ADDRESS ? "success" : "info", `${labelResolver} · registry=${currentRegistry}`, labelResolver === ZERO_ADDRESS ? `No resolver configured at ${label}; resolution can inherit a resolver from a suffix registry.` : undefined));
       if (labelResolver !== ZERO_ADDRESS) {
         deepestResolver = labelResolver;
         deepestResolverLabel = labels.slice(0, index + 1).reverse().join(".");
       }
-
       const subregistryData = encodeFunctionData({ abi: registryAbi, functionName: "getSubregistry", args: [label] });
       trace.push(traceStep(`subregistry-${index}-call`, `getSubregistry("${label}") @ ${shortAddress(currentRegistry)}`, "success", subregistryData));
       const subregistryRaw = await rawCall(currentRegistry, subregistryData);
       const nextRegistry = decodeFunctionResult({ abi: registryAbi, functionName: "getSubregistry", data: subregistryRaw }) as Address;
-      trace.push(traceStep(
-        `subregistry-${index}-result`,
-        `Subregistry for ${label}`,
-        nextRegistry !== ZERO_ADDRESS ? "success" : "info",
-        nextRegistry,
-        nextRegistry === ZERO_ADDRESS ? `${label} is a leaf registry; no deeper subregistry exists.` : undefined,
-      ));
-
+      trace.push(traceStep(`subregistry-${index}-result`, `Subregistry for ${label}`, nextRegistry !== ZERO_ADDRESS ? "success" : "info", nextRegistry, nextRegistry === ZERO_ADDRESS ? `${label} is a leaf registry; no deeper subregistry exists.` : undefined));
       currentRegistry = nextRegistry;
     }
 
     const registriesData = encodeFunctionData({ abi: universalResolverAbi, functionName: "findRegistries", args: [encodedName] });
     trace.push(traceStep("registry-check-call", "Verify registry ancestry with findRegistries", "success", registriesData));
-    const registriesRaw = await rawCall(UNIVERSAL_RESOLVER, registriesData);
+    const registriesRaw = await rawCall(UNIVERSAL_RESOLVER_V2_SEPOLIA, registriesData);
     const registries = decodeFunctionResult({ abi: universalResolverAbi, functionName: "findRegistries", data: registriesRaw });
     trace.push(traceStep("registry-check", "Decoded registry ancestry", registries.length ? "success" : "warning", registries.join(" → "), registries.length ? undefined : "No registry ancestry was returned"));
 
     const resolverLookupData = encodeFunctionData({ abi: universalResolverAbi, functionName: "findResolver", args: [encodedName] });
     trace.push(traceStep("resolver-lookup-call", "Find resolver with Universal Resolver V2", "success", resolverLookupData));
-    const resolverLookupRaw = await rawCall(UNIVERSAL_RESOLVER, resolverLookupData);
+    const resolverLookupRaw = await rawCall(UNIVERSAL_RESOLVER_V2_SEPOLIA, resolverLookupData);
     const [resolverAddress, resolverNode, resolverOffset] = decodeFunctionResult({ abi: universalResolverAbi, functionName: "findResolver", data: resolverLookupRaw });
     trace.push(traceStep("resolver", "Longest-suffix resolver", resolverAddress !== ZERO_ADDRESS ? "success" : "warning", `${resolverAddress} · node ${resolverNode} · offset ${resolverOffset}${deepestResolver !== ZERO_ADDRESS ? ` · trace=${deepestResolver}` : ""}`, resolverAddress === ZERO_ADDRESS ? "No resolver was found for this name" : undefined));
     if (deepestResolver !== ZERO_ADDRESS) {
@@ -167,7 +144,7 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
     const resolverData = encodeFunctionData({ abi: resolverAbi, functionName: "addr", args: [node] });
     const universalResolverData = encodeFunctionData({ abi: universalResolverAbi, functionName: "resolve", args: [encodedName, resolverData] });
     trace.push(traceStep("resolve-call", "Call Universal Resolver V2", "success", universalResolverData));
-    const rawResult = await rawCall(UNIVERSAL_RESOLVER, universalResolverData);
+    const rawResult = await rawCall(UNIVERSAL_RESOLVER_V2_SEPOLIA, universalResolverData);
     trace.push(traceStep("resolve-result", "Read raw resolution result", "success", rawResult));
     const [result, resolvedResolver] = decodeFunctionResult({ abi: universalResolverAbi, functionName: "resolve", data: rawResult });
     trace.push(traceStep("resolve", "Decode resolution envelope", "success", `resolver=${resolvedResolver}`));
