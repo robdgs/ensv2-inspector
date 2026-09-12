@@ -141,6 +141,27 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
       trace.push(traceStep("resolver-path", "Resolver matched at registry label", deepestResolver === resolverAddress ? "success" : "warning", `${deepestResolver} · ${deepestResolverLabel}`, deepestResolver === resolverAddress ? undefined : "The manually traced resolver differs from Universal Resolver findResolver(). Inspect the registry traversal."));
     }
 
+    // Do not call resolve() when Universal Resolver V2 has already established
+    // that no resolver exists. A revert here is expected and obscures the real
+    // diagnostic. The debugger should stop at the first actionable failure.
+    if (resolverAddress === ZERO_ADDRESS) {
+      trace.push(traceStep(
+        "resolve-skipped",
+        "Call Universal Resolver V2",
+        "skipped",
+        undefined,
+        "Skipped because findResolver() returned the zero address. There is no resolver available to execute the addr() record lookup.",
+      ));
+      return {
+        input,
+        normalizedName,
+        node,
+        registry: { address: registries[0], found: registries.length > 0 },
+        resolver: { address: resolverAddress, found: false },
+        trace,
+      };
+    }
+
     const resolverData = encodeFunctionData({ abi: resolverAbi, functionName: "addr", args: [node] });
     const universalResolverData = encodeFunctionData({ abi: universalResolverAbi, functionName: "resolve", args: [encodedName, resolverData] });
     trace.push(traceStep("resolve-call", "Call Universal Resolver V2", "success", universalResolverData));
