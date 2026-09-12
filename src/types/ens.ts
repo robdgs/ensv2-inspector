@@ -20,6 +20,8 @@ export interface InspectionResult {
   input: string;
   normalizedName?: string;
   node?: string;
+  network?: "sepolia" | "mainnet";
+  mode?: "ensv2" | "legacy-fallback" | "reverse";
   registry?: { address?: string; found: boolean };
   resolver?: { address?: string; found: boolean };
   address?: string;
