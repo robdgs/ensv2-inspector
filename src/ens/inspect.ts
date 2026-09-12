@@ -1,9 +1,9 @@
 import {
+  bytesToHex,
   decodeFunctionResult,
   encodeFunctionData,
   namehash,
   normalize,
-  stringToHex,
   type Hex,
 } from "viem";
 import { ensClient } from "@/src/lib/viem";
@@ -25,7 +25,7 @@ function dnsEncode(name: string): Hex {
   }
 
   bytes.push(0);
-  return stringToHex(String.fromCharCode(...bytes));
+  return bytesToHex(Uint8Array.from(bytes));
 }
 
 export async function inspectEns(input: string): Promise<InspectionResult> {
@@ -62,19 +62,11 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
       args: [encodedName, resolverData],
     });
 
-    trace.push(traceStep(
-      "universal-resolver-call",
-      "Call Universal Resolver V2",
-      "success",
-      universalResolverData,
-    ));
+    trace.push(traceStep("universal-resolver-call", "Call Universal Resolver V2", "success", universalResolverData));
 
-    const raw = await ensClient.call({
-      to: UNIVERSAL_RESOLVER,
-      data: universalResolverData,
-    });
-
+    const raw = await ensClient.call({ to: UNIVERSAL_RESOLVER, data: universalResolverData });
     const rawResult = raw.data;
+
     if (!rawResult) {
       trace.push(traceStep("universal-resolver-result", "Read raw resolver result", "error", undefined, "Universal Resolver returned empty data"));
       return { input, normalizedName, node, trace };
@@ -96,13 +88,9 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
       resolverAddress === ZERO_ADDRESS ? "No resolver was found for this name" : undefined,
     ));
 
-    const address = decodeFunctionResult({
-      abi: resolverAbi,
-      functionName: "addr",
-      data: result,
-    });
-
+    const address = decodeFunctionResult({ abi: resolverAbi, functionName: "addr", data: result });
     const found = address !== ZERO_ADDRESS;
+
     trace.push(traceStep(
       "address",
       "Decode address record",
@@ -120,13 +108,7 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
       trace,
     };
   } catch (error) {
-    trace.push(traceStep(
-      "universal-resolver",
-      "Resolve through Universal Resolver V2",
-      "error",
-      undefined,
-      error instanceof Error ? error.message : String(error),
-    ));
+    trace.push(traceStep("universal-resolver", "Resolve through Universal Resolver V2", "error", undefined, error instanceof Error ? error.message : String(error)));
     return { input, normalizedName, node, trace };
   }
 }
