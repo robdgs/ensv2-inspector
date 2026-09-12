@@ -3,17 +3,7 @@
 import { useState } from "react";
 
 type TraceStep = { id: string; label: string; status: string; value?: string; error?: string };
-type Result = {
-  input: string;
-  normalizedName?: string;
-  node?: string;
-  registry?: { address?: string; found: boolean };
-  resolver?: { address?: string; found: boolean };
-  address?: string;
-  reverseName?: string;
-  forwardReverseMatch?: boolean;
-  trace: TraceStep[];
-};
+type Result = { input: string; normalizedName?: string; node?: string; registry?: { address?: string; found: boolean }; resolver?: { address?: string; found: boolean }; address?: string; reverseName?: string; forwardReverseMatch?: boolean; trace: TraceStep[] };
 
 const ZERO = "0x0000000000000000000000000000000000000000";
 
@@ -23,29 +13,34 @@ function short(value?: string) {
   return `${value.slice(0, 10)}…${value.slice(-8)}`;
 }
 
-function isZeroAddress(value?: string) {
-  return value?.toLowerCase() === ZERO;
-}
+function isZeroAddress(value?: string) { return value?.toLowerCase() === ZERO; }
 
 function statusMeta(status: string) {
   switch (status) {
-    case "error":
-      return { icon: "×", className: "error" };
-    case "warning":
-      return { icon: "○", className: "warning" };
-    case "skipped":
-      return { icon: "–", className: "skipped" };
-    default:
-      return { icon: "✓", className: "success" };
+    case "error": return { icon: "×", className: "error" };
+    case "warning": return { icon: "!", className: "warning" };
+    case "info": return { icon: "·", className: "info" };
+    case "skipped": return { icon: "–", className: "skipped" };
+    default: return { icon: "✓", className: "success" };
   }
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return <section className="section"><div className="section-title">{title}</div>{children}</section>;
+}
+
+function TraceRow({ step, compact = false }: { step: TraceStep; compact?: boolean }) {
+  const meta = statusMeta(step.status);
+  const isCall = step.label.includes("getResolver") || step.label.includes("getSubregistry") || step.label.includes("findResolver");
   return (
-    <section className="section">
-      <div className="section-title">{title}</div>
-      {children}
-    </section>
+    <div className={`trace-row ${meta.className}`}>
+      <div className="status-icon">{meta.icon}</div>
+      <div className="trace-main">
+        <div className="trace-label">{step.label}</div>
+        {step.value && <code className={isCall || compact ? "call-data" : "value-data"}>{isCall || compact ? short(step.value) : step.value}</code>}
+        {step.error && <div className="step-note">{step.error}</div>}
+      </div>
+    </div>
   );
 }
 
@@ -59,14 +54,12 @@ export default function Home() {
     try {
       const response = await fetch(`/api/inspect?name=${encodeURIComponent(name)}`);
       setResult(await response.json());
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   }
 
   const trace = result?.trace ?? [];
-  const registrySteps = trace.filter((step) => /ROOT REGISTRY|getResolver\(|getSubregistry\(|Registry for /.test(step.label));
-  const resolverSteps = trace.filter((step) => /Longest-suffix resolver|Resolver matched|Resolver for /.test(step.label));
+  const registrySteps = trace.filter((step) => /ROOT REGISTRY|getResolver\(|getSubregistry\(/.test(step.label));
+  const resolverSteps = trace.filter((step) => /Resolver for |Longest-suffix resolver|Resolver matched/.test(step.label));
   const resolutionSteps = trace.filter((step) => /Universal Resolver|resolution result|resolution envelope|address record/.test(step.label));
   const diagnosticSteps = trace.filter((step) => ["error", "warning"].includes(step.status));
   const finalSuccess = Boolean(result?.address && !isZeroAddress(result.address));
@@ -90,100 +83,37 @@ export default function Home() {
       {result && (
         <div className="results">
           <div className={`target-card ${finalSuccess ? "resolved" : ""}`}>
-            <div>
-              <div className="muted-label">RESOLUTION TARGET</div>
-              <div className="target-name">{result.normalizedName ?? result.input}</div>
-            </div>
-            <div className="target-result">
-              <div className="muted-label">RESOLVED ADDRESS</div>
-              <code>{result.address ?? "Resolution failed"}</code>
-            </div>
+            <div><div className="muted-label">RESOLUTION TARGET</div><div className="target-name">{result.normalizedName ?? result.input}</div></div>
+            <div className="target-result"><div className="muted-label">RESOLVED ADDRESS</div><code>{result.address ?? "Resolution failed"}</code></div>
           </div>
 
-          {result.normalizedName && (
-            <div className="name-path">
-              {result.normalizedName.split(".").map((label, index, labels) => (
-                <span key={`${label}-${index}`}>
-                  <span className="path-node">{label}</span>{index < labels.length - 1 && <span className="path-arrow">›</span>}
-                </span>
-              ))}
-            </div>
-          )}
+          {result.normalizedName && <div className="name-path"><span className="path-prefix">name</span>{result.normalizedName.split(".").map((label, index, labels) => <span key={`${label}-${index}`}><span className="path-node">{label}</span>{index < labels.length - 1 && <span className="path-arrow">›</span>}</span>)}</div>}
 
           <Section title="Registry Trace">
             <div className="trace-tree">
-              {registrySteps.map((step) => {
-                const meta = statusMeta(step.status);
-                const isCall = step.label.includes("getResolver") || step.label.includes("getSubregistry");
-                const value = step.value;
-                return (
-                  <div className={`trace-row ${meta.className}`} key={step.id}>
-                    <div className="status-icon">{meta.icon}</div>
-                    <div className="trace-main">
-                      <div className="trace-label">{step.label}</div>
-                      {value && <code className={isCall ? "call-data" : "value-data"}>{isCall ? short(value) : value}</code>}
-                      {step.error && <div className="step-note">{step.error}</div>}
-                    </div>
-                  </div>
-                );
-              })}
+              {registrySteps.map((step) => <TraceRow key={step.id} step={step} compact={step.label.includes("call")} />)}
             </div>
           </Section>
 
           <Section title="Resolver">
             <div className="panel-list">
-              {resolverSteps.map((step) => {
-                const meta = statusMeta(step.status);
-                return (
-                  <div className={`detail-row ${meta.className}`} key={step.id}>
-                    <div className="status-icon">{meta.icon}</div>
-                    <div className="detail-content">
-                      <div className="trace-label">{step.label}</div>
-                      {step.value && <code>{step.value}</code>}
-                      {step.error && <div className="step-note">{step.error}</div>}
-                    </div>
-                  </div>
-                );
-              })}
+              {resolverSteps.map((step) => <TraceRow key={step.id} step={step} />)}
               {result.resolver?.address && <div className="resolver-chip"><span>Selected resolver</span><code>{result.resolver.address}</code></div>}
             </div>
           </Section>
 
           <Section title="Resolution">
             <div className="panel-list">
-              {resolutionSteps.map((step) => {
-                const meta = statusMeta(step.status);
-                return (
-                  <div className={`detail-row ${meta.className}`} key={step.id}>
-                    <div className="status-icon">{meta.icon}</div>
-                    <div className="detail-content">
-                      <div className="trace-label">{step.label}</div>
-                      {step.value && <code>{step.label.includes("raw") ? short(step.value) : step.value}</code>}
-                      {step.error && <div className="step-note">{step.error}</div>}
-                    </div>
-                  </div>
-                );
-              })}
+              {resolutionSteps.map((step) => <TraceRow key={step.id} step={step} compact={step.label.includes("raw")} />)}
             </div>
           </Section>
 
           <Section title="Diagnostics">
             <div className={`diagnostic ${finalSuccess ? "ok" : "problem"}`}>
               <div className="diagnostic-icon">{finalSuccess ? "✓" : "!"}</div>
-              <div>
-                <strong>{finalSuccess ? "ENSv2 resolution successful" : "ENSv2 resolution requires attention"}</strong>
-                <p>{finalSuccess ? "The registry traversal, longest-suffix resolver lookup and final address resolution completed successfully." : "Inspect the trace above to identify the failing stage."}</p>
-              </div>
+              <div><strong>{finalSuccess ? "ENSv2 resolution successful" : "ENSv2 resolution requires attention"}</strong><p>{finalSuccess ? "The registry traversal, longest-suffix resolver lookup and final address resolution completed successfully." : "Inspect the trace above to identify the failing stage."}</p></div>
             </div>
-            {diagnosticSteps.map((step) => {
-              const meta = statusMeta(step.status);
-              return (
-                <div className={`diagnostic-detail ${meta.className}`} key={step.id}>
-                  <span className="status-icon">{meta.icon}</span>
-                  <div><strong>{step.label}</strong>{step.error && <p>{step.error}</p>}</div>
-                </div>
-              );
-            })}
+            {diagnosticSteps.map((step) => { const meta = statusMeta(step.status); return <div className={`diagnostic-detail ${meta.className}`} key={step.id}><span className="status-icon">{meta.icon}</span><div><strong>{step.label}</strong>{step.error && <p>{step.error}</p>}</div></div>; })}
           </Section>
         </div>
       )}
@@ -214,6 +144,7 @@ export default function Home() {
         code { color: #d4d4d8; font-size: 12px; word-break: break-all; }
         .target-result code { display: block; margin-top: 8px; color: #f4f4f5; }
         .name-path { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 16px 0 4px; color: #a1a1aa; font-size: 12px; }
+        .path-prefix { color: #52525b; margin-right: 2px; }
         .path-node { padding: 5px 8px; border: 1px solid #27272a; background: #111113; border-radius: 6px; }
         .path-arrow { padding: 0 3px; color: #52525b; }
         .section { margin-top: 34px; }
@@ -223,9 +154,10 @@ export default function Home() {
         .trace-row:last-child, .detail-row:last-child { border-bottom: 0; }
         .status-icon { flex: 0 0 18px; text-align: center; font-weight: 700; }
         .success .status-icon { color: #a1a1aa; }
+        .info .status-icon { color: #71717a; }
         .warning .status-icon { color: #facc15; }
         .error .status-icon { color: #f87171; }
-        .skipped .status-icon { color: #71717a; }
+        .skipped .status-icon { color: #52525b; }
         .trace-main, .detail-content { min-width: 0; flex: 1; }
         .trace-label { font-size: 12px; color: #e4e4e7; }
         .call-data { display: block; margin-top: 8px; color: #71717a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
