@@ -8,9 +8,9 @@ import {
   type Hex,
 } from "viem";
 import { normalize } from "viem/ens";
-import { ensClient } from "@/src/lib/viem";
+import { ensClient, mainnetEnsClient } from "@/src/lib/viem";
 import { registryAbi, resolverAbi, universalResolverAbi } from "@/src/ens/abi";
-import { UNIVERSAL_RESOLVER_V2_SEPOLIA } from "@/src/ens/raw";
+import { UNIVERSAL_RESOLVER, UNIVERSAL_RESOLVER_V2_SEPOLIA } from "@/src/ens/raw";
 import { traceStep } from "@/src/ens/trace";
 import type { InspectionResult } from "@/src/types/ens";
 
@@ -43,14 +43,38 @@ function normalizeEnsName(input: string): { name: string; usedFallback: boolean 
   }
 }
 
-async function rawCall(to: Address, data: Hex) {
-  const response = await ensClient.call({ to, data });
+async function rawCall(client: typeof ensClient, to: Address, data: Hex) {
+  const response = await client.call({ to, data });
   if (!response.data) throw new Error(`Empty RPC result from ${to}`);
   return response.data;
 }
 
 function shortAddress(address: string) {
   return address === ZERO_ADDRESS ? "0x0000…0000" : `${address.slice(0, 8)}…${address.slice(-6)}`;
+}
+
+async function resolveOnMainnet(normalizedName: string, node: Hex, trace: InspectionResult["trace"]) {
+  const encodedName = dnsEncode(normalizedName);
+  const resolverData = encodeFunctionData({ abi: resolverAbi, functionName: "addr", args: [node] });
+  const resolveData = encodeFunctionData({ abi: universalResolverAbi, functionName: "resolve", args: [encodedName, resolverData] });
+
+  trace.push(traceStep("mainnet-fallback-call", "Try Ethereum Mainnet ENS resolution", "info", resolveData));
+  try {
+    const rawResult = await rawCall(mainnetEnsClient, UNIVERSAL_RESOLVER, resolveData);
+    trace.push(traceStep("mainnet-fallback-result", "Read Mainnet resolution result", "success", rawResult));
+    const [result, resolvedResolver] = decodeFunctionResult({ abi: universalResolverAbi, functionName: "resolve", data: rawResult });
+    const address = decodeFunctionResult({ abi: resolverAbi, functionName: "addr", data: result }) as Address;
+    if (address === ZERO_ADDRESS) {
+      trace.push(traceStep("mainnet-fallback-address", "Decode Mainnet address record", "warning", address, "The name is reachable on Mainnet, but its ETH address record is empty."));
+      return { success: false as const };
+    }
+    trace.push(traceStep("mainnet-fallback-address", "Decode Mainnet address record", "success", `${address} · resolver=${resolvedResolver}`));
+    trace.push(traceStep("mainnet-fallback", "Mainnet resolution succeeded", "warning", normalizedName, "This name resolves on Ethereum Mainnet through the canonical ENS entrypoint, while the Sepolia ENSv2 hierarchy did not contain a resolver. It should not be presented as an ENSv2 Sepolia failure."));
+    return { success: true as const, address };
+  } catch (error) {
+    trace.push(traceStep("mainnet-fallback", "Mainnet resolution unavailable", "info", undefined, error instanceof Error ? error.message : String(error)));
+    return { success: false as const };
+  }
 }
 
 export async function inspectEns(input: string): Promise<InspectionResult> {
@@ -66,13 +90,24 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
     trace.push(traceStep("input", "Detect input type", "success", "EVM address"));
     try {
       const reverseData = encodeFunctionData({ abi: universalResolverAbi, functionName: "reverse", args: [value as Hex, ETH_COIN_TYPE] });
-      trace.push(traceStep("reverse-call", "Reverse-resolve address", "success", reverseData));
-      const reverseRaw = await rawCall(UNIVERSAL_RESOLVER_V2_SEPOLIA, reverseData);
-      trace.push(traceStep("reverse-result", "Read raw reverse result", "success", reverseRaw));
+      trace.push(traceStep("reverse-call", "Reverse-resolve address on Sepolia", "success", reverseData));
+      try {
+        const reverseRaw = await rawCall(ensClient, UNIVERSAL_RESOLVER_V2_SEPOLIA, reverseData);
+        trace.push(traceStep("reverse-result", "Read raw reverse result", "success", reverseRaw));
+        const [primary, resolver, reverseResolver] = decodeFunctionResult({ abi: universalResolverAbi, functionName: "reverse", data: reverseRaw });
+        const found = primary.length > 0;
+        trace.push(traceStep("reverse", "Decode primary ENS name", found ? "success" : "warning", `${primary || "No primary name"} · resolver=${resolver} · reverseResolver=${reverseResolver}`, found ? undefined : "No verified primary ENS name was found for this address"));
+        if (found) return { input, address: value, reverseName: primary, forwardReverseMatch: true, network: "sepolia", mode: "reverse", trace };
+      } catch (sepoliaError) {
+        trace.push(traceStep("reverse-sepolia", "Sepolia reverse resolution unavailable", "info", undefined, sepoliaError instanceof Error ? sepoliaError.message : String(sepoliaError)));
+      }
+
+      const reverseRaw = await rawCall(mainnetEnsClient, UNIVERSAL_RESOLVER, reverseData);
+      trace.push(traceStep("reverse-mainnet-result", "Read Mainnet reverse result", "success", reverseRaw));
       const [primary, resolver, reverseResolver] = decodeFunctionResult({ abi: universalResolverAbi, functionName: "reverse", data: reverseRaw });
       const found = primary.length > 0;
-      trace.push(traceStep("reverse", "Decode primary ENS name", found ? "success" : "warning", `${primary || "No primary name"} · resolver=${resolver} · reverseResolver=${reverseResolver}`, found ? undefined : "No verified primary ENS name was found for this address"));
-      return { input, address: value, reverseName: primary || undefined, forwardReverseMatch: found, trace };
+      trace.push(traceStep("reverse-mainnet", "Decode Mainnet primary ENS name", found ? "success" : "warning", `${primary || "No primary name"} · resolver=${resolver} · reverseResolver=${reverseResolver}`, found ? undefined : "No verified primary ENS name was found for this address"));
+      return { input, address: value, reverseName: primary || undefined, forwardReverseMatch: found, network: "mainnet", mode: "reverse", trace };
     } catch (error) {
       trace.push(traceStep("reverse", "Reverse ENS resolution", "error", undefined, error instanceof Error ? error.message : String(error)));
       return { input, address: value, trace };
@@ -92,14 +127,13 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
 
   trace.push(traceStep("normalize", "Normalize ENS name", normalizationFallback ? "warning" : "success", normalizedName, normalizationFallback ? "Used the narrow ASCII DNS-compatible fallback after viem rejected the input." : undefined));
   const node = namehash(normalizedName);
-  trace.push(traceStep("namehash", "Calculate ENS node", "success", node));
 
   try {
     const encodedName = dnsEncode(normalizedName);
     const labels = normalizedName.split(".").filter(Boolean).reverse();
     const rootData = encodeFunctionData({ abi: universalResolverAbi, functionName: "ROOT_REGISTRY", args: [] });
     trace.push(traceStep("root-call", "Read ENSv2 root registry", "success", rootData));
-    const rootRaw = await rawCall(UNIVERSAL_RESOLVER_V2_SEPOLIA, rootData);
+    const rootRaw = await rawCall(ensClient, UNIVERSAL_RESOLVER_V2_SEPOLIA, rootData);
     const rootRegistry = decodeFunctionResult({ abi: universalResolverAbi, functionName: "ROOT_REGISTRY", data: rootRaw }) as Address;
     trace.push(traceStep("root", "ROOT REGISTRY", rootRegistry !== ZERO_ADDRESS ? "success" : "error", rootRegistry, rootRegistry === ZERO_ADDRESS ? "Universal Resolver returned a zero root registry" : undefined));
 
@@ -111,7 +145,7 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
       if (currentRegistry === ZERO_ADDRESS) break;
       const resolverData = encodeFunctionData({ abi: registryAbi, functionName: "getResolver", args: [label] });
       trace.push(traceStep(`resolver-${index}-call`, `getResolver("${label}") @ ${shortAddress(currentRegistry)}`, "success", resolverData));
-      const resolverRaw = await rawCall(currentRegistry, resolverData);
+      const resolverRaw = await rawCall(ensClient, currentRegistry, resolverData);
       const labelResolver = decodeFunctionResult({ abi: registryAbi, functionName: "getResolver", data: resolverRaw }) as Address;
       trace.push(traceStep(`resolver-${index}-result`, `Resolver for ${label}`, labelResolver !== ZERO_ADDRESS ? "success" : "info", `${labelResolver} · registry=${currentRegistry}`, labelResolver === ZERO_ADDRESS ? `No resolver configured at ${label}; resolution can inherit a resolver from a suffix registry.` : undefined));
       if (labelResolver !== ZERO_ADDRESS) {
@@ -120,7 +154,7 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
       }
       const subregistryData = encodeFunctionData({ abi: registryAbi, functionName: "getSubregistry", args: [label] });
       trace.push(traceStep(`subregistry-${index}-call`, `getSubregistry("${label}") @ ${shortAddress(currentRegistry)}`, "success", subregistryData));
-      const subregistryRaw = await rawCall(currentRegistry, subregistryData);
+      const subregistryRaw = await rawCall(ensClient, currentRegistry, subregistryData);
       const nextRegistry = decodeFunctionResult({ abi: registryAbi, functionName: "getSubregistry", data: subregistryRaw }) as Address;
       trace.push(traceStep(`subregistry-${index}-result`, `Subregistry for ${label}`, nextRegistry !== ZERO_ADDRESS ? "success" : "info", nextRegistry, nextRegistry === ZERO_ADDRESS ? `${label} is a leaf registry; no deeper subregistry exists.` : undefined));
       currentRegistry = nextRegistry;
@@ -128,34 +162,43 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
 
     const registriesData = encodeFunctionData({ abi: universalResolverAbi, functionName: "findRegistries", args: [encodedName] });
     trace.push(traceStep("registry-check-call", "Verify registry ancestry with findRegistries", "success", registriesData));
-    const registriesRaw = await rawCall(UNIVERSAL_RESOLVER_V2_SEPOLIA, registriesData);
+    const registriesRaw = await rawCall(ensClient, UNIVERSAL_RESOLVER_V2_SEPOLIA, registriesData);
     const registries = decodeFunctionResult({ abi: universalResolverAbi, functionName: "findRegistries", data: registriesRaw });
     trace.push(traceStep("registry-check", "Decoded registry ancestry", registries.length ? "success" : "warning", registries.join(" → "), registries.length ? undefined : "No registry ancestry was returned"));
 
     const resolverLookupData = encodeFunctionData({ abi: universalResolverAbi, functionName: "findResolver", args: [encodedName] });
     trace.push(traceStep("resolver-lookup-call", "Find resolver with Universal Resolver V2", "success", resolverLookupData));
-    const resolverLookupRaw = await rawCall(UNIVERSAL_RESOLVER_V2_SEPOLIA, resolverLookupData);
+    const resolverLookupRaw = await rawCall(ensClient, UNIVERSAL_RESOLVER_V2_SEPOLIA, resolverLookupData);
     const [resolverAddress, resolverNode, resolverOffset] = decodeFunctionResult({ abi: universalResolverAbi, functionName: "findResolver", data: resolverLookupRaw });
     trace.push(traceStep("resolver", "Longest-suffix resolver", resolverAddress !== ZERO_ADDRESS ? "success" : "warning", `${resolverAddress} · node ${resolverNode} · offset ${resolverOffset}${deepestResolver !== ZERO_ADDRESS ? ` · trace=${deepestResolver}` : ""}`, resolverAddress === ZERO_ADDRESS ? "No resolver was found for this name" : undefined));
     if (deepestResolver !== ZERO_ADDRESS) {
       trace.push(traceStep("resolver-path", "Resolver matched at registry label", deepestResolver === resolverAddress ? "success" : "warning", `${deepestResolver} · ${deepestResolverLabel}`, deepestResolver === resolverAddress ? undefined : "The manually traced resolver differs from Universal Resolver findResolver(). Inspect the registry traversal."));
     }
 
-    // Do not call resolve() when Universal Resolver V2 has already established
-    // that no resolver exists. A revert here is expected and obscures the real
-    // diagnostic. The debugger should stop at the first actionable failure.
     if (resolverAddress === ZERO_ADDRESS) {
-      trace.push(traceStep(
-        "resolve-skipped",
-        "Call Universal Resolver V2",
-        "skipped",
-        undefined,
-        "Skipped because findResolver() returned the zero address. There is no resolver available to execute the addr() record lookup.",
-      ));
+      trace.push(traceStep("resolve-skipped", "Call Universal Resolver V2", "skipped", undefined, "Skipped because findResolver() returned the zero address. There is no resolver available to execute the addr() record lookup."));
+
+      const mainnet = await resolveOnMainnet(normalizedName, node, trace);
+      if (mainnet.success) {
+        return {
+          input,
+          normalizedName,
+          node,
+          network: "mainnet",
+          mode: "legacy-fallback",
+          registry: { found: false },
+          resolver: { found: false },
+          address: mainnet.address,
+          trace,
+        };
+      }
+
       return {
         input,
         normalizedName,
         node,
+        network: "sepolia",
+        mode: "ensv2",
         registry: { address: registries[0], found: registries.length > 0 },
         resolver: { address: resolverAddress, found: false },
         trace,
@@ -165,17 +208,17 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
     const resolverData = encodeFunctionData({ abi: resolverAbi, functionName: "addr", args: [node] });
     const universalResolverData = encodeFunctionData({ abi: universalResolverAbi, functionName: "resolve", args: [encodedName, resolverData] });
     trace.push(traceStep("resolve-call", "Call Universal Resolver V2", "success", universalResolverData));
-    const rawResult = await rawCall(UNIVERSAL_RESOLVER_V2_SEPOLIA, universalResolverData);
+    const rawResult = await rawCall(ensClient, UNIVERSAL_RESOLVER_V2_SEPOLIA, universalResolverData);
     trace.push(traceStep("resolve-result", "Read raw resolution result", "success", rawResult));
     const [result, resolvedResolver] = decodeFunctionResult({ abi: universalResolverAbi, functionName: "resolve", data: rawResult });
     trace.push(traceStep("resolve", "Decode resolution envelope", "success", `resolver=${resolvedResolver}`));
-    const address = decodeFunctionResult({ abi: resolverAbi, functionName: "addr", data: result });
+    const address = decodeFunctionResult({ abi: resolverAbi, functionName: "addr", data: result }) as Address;
     const found = address !== ZERO_ADDRESS;
     trace.push(traceStep("address", "Decode address record", found ? "success" : "warning", address, found ? undefined : "Resolver returned the zero address"));
 
-    return { input, normalizedName, node, registry: { address: registries[0], found: registries.length > 0 }, resolver: { address: resolverAddress, found: resolverAddress !== ZERO_ADDRESS }, address, trace };
+    return { input, normalizedName, node, network: "sepolia", mode: "ensv2", registry: { address: registries[0], found: registries.length > 0 }, resolver: { address: resolverAddress, found: resolverAddress !== ZERO_ADDRESS }, address, trace };
   } catch (error) {
     trace.push(traceStep("resolution", "ENSv2 resolution", "error", undefined, error instanceof Error ? error.message : String(error)));
-    return { input, normalizedName, node, trace };
+    return { input, normalizedName, node, network: "sepolia", mode: "ensv2", trace };
   }
 }
