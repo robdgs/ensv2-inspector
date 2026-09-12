@@ -53,12 +53,12 @@ function shortAddress(address: string) {
   return address === ZERO_ADDRESS ? "0x0000…0000" : `${address.slice(0, 8)}…${address.slice(-6)}`;
 }
 
-async function resolveOnMainnet(normalizedName: string, node: Hex, trace: InspectionResult["trace"]) {
+async function resolveOnMainnet(normalizedName: string, node: Hex, trace: InspectionResult["trace"], reason = "Sepolia ENSv2 resolution did not produce an address") {
   const encodedName = dnsEncode(normalizedName);
   const resolverData = encodeFunctionData({ abi: resolverAbi, functionName: "addr", args: [node] });
   const resolveData = encodeFunctionData({ abi: universalResolverAbi, functionName: "resolve", args: [encodedName, resolverData] });
 
-  trace.push(traceStep("mainnet-fallback-call", "Try Ethereum Mainnet ENS resolution", "info", resolveData));
+  trace.push(traceStep("mainnet-fallback-call", "Try Ethereum Mainnet ENS resolution", "info", resolveData, reason));
   try {
     const rawResult = await rawCall(mainnetEnsClient, UNIVERSAL_RESOLVER, resolveData);
     trace.push(traceStep("mainnet-fallback-result", "Read Mainnet resolution result", "success", rawResult));
@@ -69,7 +69,7 @@ async function resolveOnMainnet(normalizedName: string, node: Hex, trace: Inspec
       return { success: false as const };
     }
     trace.push(traceStep("mainnet-fallback-address", "Decode Mainnet address record", "success", `${address} · resolver=${resolvedResolver}`));
-    trace.push(traceStep("mainnet-fallback", "Mainnet resolution succeeded", "warning", normalizedName, "This name resolves on Ethereum Mainnet through the canonical ENS entrypoint, while the Sepolia ENSv2 hierarchy did not contain a resolver. It should not be presented as an ENSv2 Sepolia failure."));
+    trace.push(traceStep("mainnet-fallback", "Mainnet resolution succeeded", "warning", normalizedName, "The name resolves on Ethereum Mainnet through the canonical ENS entrypoint. It is not an ENSv2 Sepolia record."));
     return { success: true as const, address };
   } catch (error) {
     trace.push(traceStep("mainnet-fallback", "Mainnet resolution unavailable", "info", undefined, error instanceof Error ? error.message : String(error)));
@@ -225,64 +225,43 @@ export async function inspectEns(input: string): Promise<InspectionResult> {
     if (resolverAddress === ZERO_ADDRESS && deepestResolver !== ZERO_ADDRESS) {
       const override = await resolveWithKnownResolver(normalizedName, node, deepestResolver, trace);
       if (override.success) {
-        return {
-          input,
-          normalizedName,
-          node,
-          network: "sepolia",
-          mode: "ensv2",
-          registry: { address: registries[0], found: registries.length > 0 },
-          resolver: { address: deepestResolver, found: true },
-          address: override.address,
-          trace,
-        };
+        return { input, normalizedName, node, network: "sepolia", mode: "ensv2", registry: { address: registries[0], found: registries.length > 0 }, resolver: { address: deepestResolver, found: true }, address: override.address, trace };
       }
     }
 
     if (resolverAddress === ZERO_ADDRESS) {
       trace.push(traceStep("resolve-skipped", "Call Universal Resolver V2", "skipped", undefined, "Skipped because findResolver() returned the zero address and no resolver was recovered from the direct registry traversal."));
-
-      const mainnet = await resolveOnMainnet(normalizedName, node, trace);
-      if (mainnet.success) {
-        return {
-          input,
-          normalizedName,
-          node,
-          network: "mainnet",
-          mode: "legacy-fallback",
-          registry: { found: false },
-          resolver: { found: false },
-          address: mainnet.address,
-          trace,
-        };
-      }
-
-      return {
-        input,
-        normalizedName,
-        node,
-        network: "sepolia",
-        mode: "ensv2",
-        registry: { address: registries[0], found: registries.length > 0 },
-        resolver: { address: resolverAddress, found: false },
-        trace,
-      };
+      const mainnet = await resolveOnMainnet(normalizedName, node, trace, "Sepolia ENSv2 has no resolver for this name; checking whether the same name exists on Ethereum Mainnet.");
+      if (mainnet.success) return { input, normalizedName, node, network: "mainnet", mode: "legacy-fallback", registry: { found: false }, resolver: { found: false }, address: mainnet.address, trace };
+      return { input, normalizedName, node, network: "sepolia", mode: "ensv2", registry: { address: registries[0], found: registries.length > 0 }, resolver: { address: resolverAddress, found: false }, trace };
     }
 
     const resolverData = encodeFunctionData({ abi: resolverAbi, functionName: "addr", args: [node] });
     const universalResolverData = encodeFunctionData({ abi: universalResolverAbi, functionName: "resolve", args: [encodedName, resolverData] });
     trace.push(traceStep("resolve-call", "Call Universal Resolver V2", "success", universalResolverData));
-    const rawResult = await rawCall(ensClient, UNIVERSAL_RESOLVER_V2_SEPOLIA, universalResolverData);
-    trace.push(traceStep("resolve-result", "Read raw resolution result", "success", rawResult));
-    const [result, resolvedResolver] = decodeFunctionResult({ abi: universalResolverAbi, functionName: "resolve", data: rawResult });
-    trace.push(traceStep("resolve", "Decode resolution envelope", "success", `resolver=${resolvedResolver}`));
-    const address = decodeFunctionResult({ abi: resolverAbi, functionName: "addr", data: result }) as Address;
-    const found = address !== ZERO_ADDRESS;
-    trace.push(traceStep("address", "Decode address record", found ? "success" : "warning", address, found ? undefined : "Resolver returned the zero address"));
+    try {
+      const rawResult = await rawCall(ensClient, UNIVERSAL_RESOLVER_V2_SEPOLIA, universalResolverData);
+      trace.push(traceStep("resolve-result", "Read raw resolution result", "success", rawResult));
+      const [result, resolvedResolver] = decodeFunctionResult({ abi: universalResolverAbi, functionName: "resolve", data: rawResult });
+      trace.push(traceStep("resolve", "Decode resolution envelope", "success", `resolver=${resolvedResolver}`));
+      const address = decodeFunctionResult({ abi: resolverAbi, functionName: "addr", data: result }) as Address;
+      const found = address !== ZERO_ADDRESS;
+      trace.push(traceStep("address", "Decode address record", found ? "success" : "warning", address, found ? undefined : "Resolver returned the zero address"));
+      if (found) return { input, normalizedName, node, network: "sepolia", mode: "ensv2", registry: { address: registries[0], found: registries.length > 0 }, resolver: { address: resolverAddress, found: true }, address, trace };
 
-    return { input, normalizedName, node, network: "sepolia", mode: "ensv2", registry: { address: registries[0], found: registries.length > 0 }, resolver: { address: resolverAddress, found: resolverAddress !== ZERO_ADDRESS }, address, trace };
+      const mainnet = await resolveOnMainnet(normalizedName, node, trace, "Sepolia found a resolver, but the ENS address record is empty; checking Ethereum Mainnet.");
+      if (mainnet.success) return { input, normalizedName, node, network: "mainnet", mode: "legacy-fallback", registry: { found: false }, resolver: { found: false }, address: mainnet.address, trace };
+      return { input, normalizedName, node, network: "sepolia", mode: "ensv2", registry: { address: registries[0], found: registries.length > 0 }, resolver: { address: resolverAddress, found: true }, address, trace };
+    } catch (sepoliaError) {
+      trace.push(traceStep("resolve-sepolia-error", "Sepolia ENSv2 resolution failed", "error", undefined, sepoliaError instanceof Error ? sepoliaError.message : String(sepoliaError)));
+      const mainnet = await resolveOnMainnet(normalizedName, node, trace, "Sepolia ENSv2 resolution reverted; checking whether the same name resolves on Ethereum Mainnet.");
+      if (mainnet.success) return { input, normalizedName, node, network: "mainnet", mode: "legacy-fallback", registry: { found: false }, resolver: { found: false }, address: mainnet.address, trace };
+      return { input, normalizedName, node, network: "sepolia", mode: "ensv2", registry: { address: registries[0], found: registries.length > 0 }, resolver: { address: resolverAddress, found: true }, trace };
+    }
   } catch (error) {
     trace.push(traceStep("resolution", "ENSv2 resolution", "error", undefined, error instanceof Error ? error.message : String(error)));
+    const mainnet = await resolveOnMainnet(normalizedName, node, trace, "Sepolia ENSv2 inspection failed before a usable resolution result was obtained; checking Ethereum Mainnet.");
+    if (mainnet.success) return { input, normalizedName, node, network: "mainnet", mode: "legacy-fallback", registry: { found: false }, resolver: { found: false }, address: mainnet.address, trace };
     return { input, normalizedName, node, network: "sepolia", mode: "ensv2", trace };
   }
 }
