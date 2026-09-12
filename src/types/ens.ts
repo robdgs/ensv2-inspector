@@ -8,6 +8,14 @@ export interface TraceStep {
   error?: string;
 }
 
+export interface Diagnostic {
+  code: string;
+  severity: "info" | "warning" | "error";
+  title: string;
+  explanation: string;
+  suggestions: string[];
+}
+
 export interface InspectionResult {
   input: string;
   normalizedName?: string;
@@ -18,4 +26,5 @@ export interface InspectionResult {
   reverseName?: string;
   forwardReverseMatch?: boolean;
   trace: TraceStep[];
+  diagnostics?: Diagnostic[];
 }
