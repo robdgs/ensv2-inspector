@@ -32,7 +32,15 @@ export function ArkivHistory() {
     const sync = () => setName(input.value.trim());
     sync();
     input.addEventListener("input", sync);
-    return () => input.removeEventListener("input", sync);
+    input.addEventListener("change", sync);
+
+    const interval = window.setInterval(sync, 500);
+
+    return () => {
+      input.removeEventListener("input", sync);
+      input.removeEventListener("change", sync);
+      window.clearInterval(interval);
+    };
   }, []);
 
   useEffect(() => {
@@ -46,20 +54,30 @@ export function ArkivHistory() {
     const timer = window.setTimeout(async () => {
       setLoading(true);
       setError(null);
+
       try {
-        const response = await fetch(`/api/history?name=${encodeURIComponent(name)}&_=${Date.now()}`, {
-          cache: "no-store",
-          signal: controller.signal,
-        });
+        const response = await fetch(
+          `/api/history?name=${encodeURIComponent(name)}&_=${Date.now()}`,
+          {
+            cache: "no-store",
+            signal: controller.signal,
+          },
+        );
+
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error ?? "Arkiv history unavailable");
-        setHistory(data.history ?? []);
+        if (!response.ok) {
+          throw new Error(data.error ?? "Arkiv history unavailable");
+        }
+
+        setHistory(Array.isArray(data.history) ? data.history : []);
       } catch (err) {
-        if ((err as Error).name !== "AbortError") setError(err instanceof Error ? err.message : String(err));
+        if ((err as Error).name !== "AbortError") {
+          setError(err instanceof Error ? err.message : String(err));
+        }
       } finally {
         if (!controller.signal.aborted) setLoading(false);
       }
-    }, 900);
+    }, 500);
 
     return () => {
       window.clearTimeout(timer);
@@ -67,7 +85,7 @@ export function ArkivHistory() {
     };
   }, [name]);
 
-  if (!name || (!loading && !error && history.length === 0)) return null;
+  if (!name) return null;
 
   return (
     <section className="arkiv-history-shell">
@@ -76,16 +94,32 @@ export function ArkivHistory() {
           <div className="arkiv-eyebrow">05 / history · Arkiv</div>
           <h2>Resolution history</h2>
         </div>
-        <span>{loading ? "QUERYING" : `${history.length} SNAPSHOT${history.length === 1 ? "" : "S"}`}</span>
+        <span>
+          {loading
+            ? "QUERYING"
+            : error
+              ? "UNAVAILABLE"
+              : `${history.length} SNAPSHOT${history.length === 1 ? "" : "S"}`}
+        </span>
       </div>
 
       {error && <div className="arkiv-error">Arkiv query failed · {error}</div>}
+
+      {!loading && !error && history.length === 0 && (
+        <div className="arkiv-empty">
+          <strong>No snapshots recorded yet.</strong>
+          <span>Run an ENS inspection with Arkiv persistence enabled to create the first historical state.</span>
+        </div>
+      )}
 
       {history.length > 0 && (
         <div className="arkiv-timeline">
           {history.map((entry, index) => (
             <div className="arkiv-entry" key={entry.key}>
-              <div className="arkiv-marker"><i />{index < history.length - 1 && <b />}</div>
+              <div className="arkiv-marker">
+                <i />
+                {index < history.length - 1 && <b />}
+              </div>
               <div className="arkiv-entry-main">
                 <div className="arkiv-entry-top">
                   <strong>{short(entry.address, 12, 10)}</strong>
@@ -93,7 +127,9 @@ export function ArkivHistory() {
                 </div>
                 <div className="arkiv-entry-meta">
                   <span>BLOCK {entry.createdAtBlock ?? "—"}</span>
-                  {entry.transactionIndexInBlock && <span>TX INDEX {entry.transactionIndexInBlock}</span>}
+                  {entry.transactionIndexInBlock && (
+                    <span>TX INDEX {entry.transactionIndexInBlock}</span>
+                  )}
                   {entry.resolver && <span>RESOLVER {short(entry.resolver)}</span>}
                 </div>
               </div>
@@ -119,6 +155,9 @@ export function ArkivHistory() {
         .arkiv-entry-top strong{font-size:13px;color:#d2d2d7;font-weight:500}
         .arkiv-entry-top span{font-size:9px;color:#66676f;letter-spacing:.08em}
         .arkiv-entry-meta{display:flex;flex-wrap:wrap;gap:14px;margin-top:8px;font-size:9px;color:#55565e;letter-spacing:.08em}
+        .arkiv-empty{display:flex;flex-direction:column;gap:6px;padding:16px 15px;border:1px solid #292a2f;background:#0a0b0d}
+        .arkiv-empty strong{font-size:11px;font-weight:500;color:#bfc0c5}
+        .arkiv-empty span{font-size:10px;line-height:1.5;color:#5f6068}
         .arkiv-error{padding:13px 15px;border:1px solid #303137;color:#8b8c93;font-size:11px}
         @media(max-width:760px){.arkiv-entry-top{display:block}.arkiv-entry-top span{display:block;margin-top:5px}}
       `}</style>
