@@ -139,7 +139,7 @@ export function ArkivHistory() {
       )}
 
       <style jsx>{`
-        .arkiv-history-shell{margin:0 0 54px;padding-top:6px;border-top:1px solid #202126}
+        .arkiv-history-shell{margin:0 0 54px;padding:6px 0 0 18px;border-top:1px solid #202126;border-left:1px solid #25262b}
         .arkiv-history-heading{display:flex;justify-content:space-between;align-items:end;padding:26px 0 13px}
         .arkiv-eyebrow{font-size:10px;letter-spacing:.16em;color:#62636b;text-transform:uppercase}
         .arkiv-history-heading h2{font-size:17px;margin:6px 0 0}
